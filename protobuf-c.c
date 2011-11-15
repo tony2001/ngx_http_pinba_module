@@ -626,7 +626,7 @@ fixed64_pack (uint64_t value, void *out)
   memcpy (out, &value, 8);
 #else
   fixed32_pack (value, out);
-  fixed32_pack (value>>32, out+4);
+  fixed32_pack (value>>32, (char *)out+4);
 #endif
   return 8;
 }
@@ -1312,7 +1312,9 @@ pack_buffer_packed_payload (const ProtobufCFieldDescriptor *field,
     }
   return rv;
 
+#if IS_LITTLE_ENDIAN
 no_packing_needed:
+#endif
   buffer->append (buffer, rv, array);
   return rv;
 }
@@ -1976,7 +1978,9 @@ parse_packed_repeated_member (ScannedMember *scanned_member,
   *p_n += count;
   return TRUE;
 
+#if IS_LITTLE_ENDIAN
 no_unpacking_needed:
+#endif
   memcpy (array, at, count * siz);
   *p_n += count;
   return TRUE;
