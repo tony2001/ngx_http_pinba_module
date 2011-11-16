@@ -8,9 +8,14 @@
 #include <ngx_http.h>
 
 typedef struct {
-    ngx_flag_t       enable;
-    ngx_array_t      *ignore_codes;
-    ngx_connection_t *socket; 
+	ngx_flag_t   enable;
+	ngx_array_t *ignore_codes;
+	ngx_url_t    server;
+	struct {
+		                    int fd;
+		struct sockaddr_storage sockaddr;
+		                    int sockaddr_len;
+	} socket;
 } ngx_http_pinba_loc_conf_t;
 
 static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf);
@@ -79,10 +84,10 @@ ngx_module_t  ngx_http_pinba_module = { /* {{{ */
 
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
 {
-    ngx_http_pinba_loc_conf_t *lcf = conf;
-    ngx_str_t *value;
-    ngx_uint_t i, *pcode;
-    ngx_int_t code;
+	ngx_http_pinba_loc_conf_t *lcf = conf;
+	ngx_str_t *value;
+	ngx_uint_t i, *pcode;
+	ngx_int_t code;
 
 	if (lcf->ignore_codes == NULL) {
 		lcf->ignore_codes = ngx_array_create(cf->pool, 4, sizeof(ngx_uint_t));
@@ -114,17 +119,20 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 
 static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
 {
-    ngx_str_t *value;
-    ngx_url_t u;
+	ngx_str_t *value;
+	ngx_url_t u;
+	ngx_http_pinba_loc_conf_t *lcf = conf;
+	struct addrinfo *ai_list, *ai_ptr, ai_hints;
+	int fd, status;
 
-    value = cf->args->elts;
+	value = cf->args->elts;
 
-    ngx_memzero(&u, sizeof(ngx_url_t));
+	ngx_memzero(&u, sizeof(ngx_url_t));
 
-    u.url = value[1];
-    u.no_resolve = 0;
+	u.url = value[1];
+	u.no_resolve = 0;
 
-    if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
+	if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
 		if (u.err) {
 			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "%s in pinba server \"%V\"", u.err, &u.url);
 		}
@@ -136,7 +144,49 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 		return NGX_CONF_ERROR;
 	}
 
-    return NGX_CONF_OK;
+	lcf->socket.fd = -1;
+	lcf->server = u;
+
+	if (lcf->server.host.len > 0 && lcf->server.host.data != NULL) {
+		lcf->server.host.data[lcf->server.host.len] = '\0';
+	}
+
+	memset(&ai_hints, 0, sizeof(ai_hints));
+	ai_hints.ai_flags = 0;
+#ifdef AI_ADDRCONFIG
+	ai_hints.ai_flags |= AI_ADDRCONFIG;
+#endif
+	ai_hints.ai_family = AF_UNSPEC;
+	ai_hints.ai_socktype  = SOCK_DGRAM;
+	ai_hints.ai_addr = NULL;
+	ai_hints.ai_canonname = NULL;
+	ai_hints.ai_next = NULL;
+
+	ai_list = NULL;
+	status = getaddrinfo(lcf->server.host.data, lcf->server.port_text.data, &ai_hints, &ai_list);
+	if (status != 0) {
+		ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "pinba module: getaddrinfo(\"%V\") failed: %s", &lcf->server.url, gai_strerror(status));
+		return NGX_CONF_ERROR;
+	}
+
+	fd = -1;
+	for (ai_ptr = ai_list; ai_ptr != NULL; ai_ptr = ai_ptr->ai_next) {
+		fd = socket(ai_ptr->ai_family, ai_ptr->ai_socktype, ai_ptr->ai_protocol);
+		if (fd >= 0) {
+			break;
+		}
+	}
+	freeaddrinfo(ai_list);
+
+	if (fd >= 0) {
+		lcf->socket.fd = fd;
+		memcpy(&lcf->socket.sockaddr, ai_ptr->ai_addr, ai_ptr->ai_addrlen);
+		lcf->socket.sockaddr_len = ai_ptr->ai_addrlen;
+	} else {
+		ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "pinba module: socket() failed: %s", strerror(errno));
+		return NGX_CONF_ERROR;
+	}
+	return NGX_CONF_OK;
 }
 /* }}} */
 
@@ -173,6 +223,11 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		}
 	}
 
+	if (lcf->socket.fd < 0) {
+		/* no socket -> no data */
+		return NGX_OK; /* doesn't matter, the return status is ignored anyway */
+	}
+	
 	/* ok, we may proceed then.. */
 
 
@@ -189,29 +244,31 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 		return NULL;
 	}
 
-    conf->enable = NGX_CONF_UNSET;
-    conf->ignore_codes = NULL;
-    conf->socket = NULL;
+	conf->enable = NGX_CONF_UNSET;
+	conf->ignore_codes = NULL;
+	conf->socket.fd = -1;
 
-    return conf;
+	return conf;
 }
 /* }}} */
 
 static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) /* {{{ */
 {
-    ngx_http_pinba_loc_conf_t *prev = parent;
-    ngx_http_pinba_loc_conf_t *conf = child;
+	ngx_http_pinba_loc_conf_t *prev = parent;
+	ngx_http_pinba_loc_conf_t *conf = child;
 
-    conf->enable = prev->enable;
-    conf->ignore_codes = prev->ignore_codes;
+	conf->enable = prev->enable;
+	conf->ignore_codes = prev->ignore_codes;
+	conf->server = prev->server;
+	conf->socket = prev->socket;
 
-    return NGX_CONF_OK;
+	return NGX_CONF_OK;
 }
 /* }}} */
 
 static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf) /* {{{ */
 {
-	ngx_http_handler_pt        *h;
+	ngx_http_handler_pt *h;
 	ngx_http_core_main_conf_t  *cmcf;
 
 	cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
@@ -221,9 +278,9 @@ static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf) /* {{{ */
 		return NGX_ERROR;
 	}
 
-    *h = ngx_http_pinba_handler;
+	*h = ngx_http_pinba_handler;
 
-    return NGX_OK;
+	return NGX_OK;
 }
 /* }}} */
 
