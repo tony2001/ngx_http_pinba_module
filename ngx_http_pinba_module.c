@@ -136,18 +136,68 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 	}
 
 	for (i = 1; i < cf->args->nelts; i++) {
-		code = ngx_atoi(value[i].data, value[i].len);
-		if (code < 100 || code > 599) {
-			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\"", &value[i]);
-			return NGX_CONF_ERROR;
-		}
+		char *dash;
 
-		pcode = ngx_array_push(lcf->ignore_codes);
-		if (pcode == NULL) {
-			return NGX_CONF_ERROR;
-		}
+		dash = ngx_strchr(value[i].data, '-');
+		if (dash) {
+			/* a range of values */
+			u_char *data_copy, *dash_copy;
+			int code1_len, code2_len, n;
+			ngx_int_t code1, code2;
 
-		*pcode = (ngx_uint_t)code;
+			code1_len = (dash - (char *)value[i].data);
+			code2_len = value[i].len - code1_len;
+
+			if (code1_len < 3 || code2_len < 3) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\"", &value[i]);
+				return NGX_CONF_ERROR;
+			}
+
+			data_copy = ngx_pstrdup(cf->pool, &value[i]);
+			dash_copy = data_copy + code1_len;
+			*dash_copy = '\0';
+			
+			code1 = ngx_atoi(data_copy, code1_len);
+			if (code1 < 100 || code1 > 599) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\", values must not be less than 100 or greater than 599", &value[i]);
+				return NGX_CONF_ERROR;
+			}
+			
+			code2 = ngx_atoi(dash_copy + 1, code2_len - 1);
+			if (code2 < 100 || code2 > 599) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\", values must not be less than 100 or greater than 599", &value[i]);
+				return NGX_CONF_ERROR;
+			}
+
+			if (code1 >= code2) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\", range end must be greater than range start", &value[i]);
+				return NGX_CONF_ERROR;
+			}
+
+			for (n = code1; n <= code2; n++) {
+				pcode = ngx_array_push(lcf->ignore_codes);
+				if (pcode == NULL) {
+					return NGX_CONF_ERROR;
+				}
+				*pcode = (ngx_uint_t)n;
+			}
+
+
+		} else {
+			/* just a simple value */
+			code = ngx_atoi(value[i].data, value[i].len);
+			if (code < 100 || code > 599) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\"", &value[i]);
+				return NGX_CONF_ERROR;
+			}
+
+			pcode = ngx_array_push(lcf->ignore_codes);
+			if (pcode == NULL) {
+				return NGX_CONF_ERROR;
+			}
+
+			*pcode = (ngx_uint_t)code;
+		}
 	}
 
 	return NGX_CONF_OK;
