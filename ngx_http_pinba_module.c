@@ -274,7 +274,7 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 	ai_hints.ai_next = NULL;
 
 	ai_list = NULL;
-	status = getaddrinfo(lcf->server.host.data, lcf->server.port_text.data, &ai_hints, &ai_list);
+	status = getaddrinfo((char *)lcf->server.host.data, (char *)lcf->server.port_text.data, &ai_hints, &ai_list);
 	if (status != 0) {
 		ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "pinba module: getaddrinfo(\"%V\") failed: %s", &lcf->server.url, gai_strerror(status));
 		return NGX_CONF_ERROR;
@@ -319,7 +319,7 @@ static int ngx_http_pinba_send_data(ngx_http_pinba_loc_conf_t *lcf, char *buf, s
 
 static int ngx_http_pinba_push_into_buffer(ngx_http_pinba_loc_conf_t *lcf, char *buf, size_t buf_len) /* {{{ */
 {
-	if (lcf->buffer_size != NGX_CONF_UNSET && lcf->buffer_size > 0) {
+	if (lcf->buffer_size != NGX_CONF_UNSET_SIZE  && lcf->buffer_size > 0) {
 		if (lcf->buffer == NULL) {
 			lcf->buffer = malloc(lcf->buffer_size);
 			if (!lcf->buffer) {
@@ -386,13 +386,10 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 
 	{
 		char hostname[PINBA_STR_BUFFER_SIZE] = {0}, server_name[PINBA_STR_BUFFER_SIZE] = {0}, script_name[PINBA_STR_BUFFER_SIZE] = {0};
-		ngx_uint_t document_size, status;
-		float request_time;
 		ngx_time_t *tp;
 		ngx_msec_int_t ms;
 		ngx_pinba_buf_t buf;
-		size_t packed_size, total_sent;
-		ssize_t sent;
+		size_t packed_size;
 		Pinba__Request request = PINBA__REQUEST__INIT;
 
 		if (lcf->hostname[0] == '\0') {
@@ -436,8 +433,8 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 
 		pinba__request__pack_to_buffer(&request, (ProtobufCBuffer *)&buf);
 
-		if (ngx_http_pinba_push_into_buffer(lcf, buf.str.data, buf.str.len) < 0) {
-			ngx_http_pinba_send_data(lcf, buf.str.data, buf.str.len);
+		if (ngx_http_pinba_push_into_buffer(lcf, (char *)buf.str.data, buf.str.len) < 0) {
+			ngx_http_pinba_send_data(lcf, (char *)buf.str.data, buf.str.len);
 		}
 
 		ngx_pfree(r->pool, buf.str.data);
