@@ -49,7 +49,7 @@ void   pinba__request__free_unpacked
   PROTOBUF_C_ASSERT (message->base.descriptor == &pinba__request__descriptor);
   protobuf_c_message_free_unpacked ((ProtobufCMessage*)message, allocator);
 }
-static const ProtobufCFieldDescriptor pinba__request__field_descriptors[16] =
+static const ProtobufCFieldDescriptor pinba__request__field_descriptors[17] =
 {
   {
     "hostname",
@@ -243,6 +243,18 @@ static const ProtobufCFieldDescriptor pinba__request__field_descriptors[16] =
     0,            /* packed */
     0,NULL,NULL    /* reserved1,reserved2, etc */
   },
+  {
+    "requests",
+    17,
+    PROTOBUF_C_LABEL_REPEATED,
+    PROTOBUF_C_TYPE_MESSAGE,
+    PROTOBUF_C_OFFSETOF(Pinba__Request, n_requests),
+    PROTOBUF_C_OFFSETOF(Pinba__Request, requests),
+    &pinba__request__descriptor,
+    NULL,
+    0,            /* packed */
+    0,NULL,NULL    /* reserved1,reserved2, etc */
+  },
 };
 static const unsigned pinba__request__field_indices_by_name[] = {
   14,   /* field[14] = dictionary */
@@ -251,6 +263,7 @@ static const unsigned pinba__request__field_indices_by_name[] = {
   5,   /* field[5] = memory_peak */
   3,   /* field[3] = request_count */
   6,   /* field[6] = request_time */
+  16,   /* field[16] = requests */
   8,   /* field[8] = ru_stime */
   7,   /* field[7] = ru_utime */
   2,   /* field[2] = script_name */
@@ -265,7 +278,7 @@ static const unsigned pinba__request__field_indices_by_name[] = {
 static const ProtobufCIntRange pinba__request__number_ranges[1 + 1] =
 {
   { 1, 0 },
-  { 0, 16 }
+  { 0, 17 }
 };
 const ProtobufCMessageDescriptor pinba__request__descriptor =
 {
@@ -275,7 +288,7 @@ const ProtobufCMessageDescriptor pinba__request__descriptor =
   "Pinba__Request",
   "Pinba",
   sizeof(Pinba__Request),
-  16,
+  17,
   pinba__request__field_descriptors,
   pinba__request__field_indices_by_name,
   1,  pinba__request__number_ranges,

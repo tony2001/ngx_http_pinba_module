@@ -24,6 +24,8 @@ typedef struct {
 		                    int sockaddr_len;
 	} socket;
 	char hostname[PINBA_STR_BUFFER_SIZE];
+	Pinba__Request *request;
+	size_t          request_size;
 } ngx_http_pinba_loc_conf_t;
 
 static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf);
@@ -32,8 +34,6 @@ static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf);
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-
-static void ngx_http_pinba_str_append(ProtobufCBuffer *buffer, size_t len, const uint8_t *data);
 
 typedef struct {
 	ProtobufCBuffer base;
@@ -104,15 +104,6 @@ ngx_module_t  ngx_http_pinba_module = { /* {{{ */
 };
 /* }}} */
 
-
-static void ngx_http_pinba_str_append(ProtobufCBuffer *buffer, size_t len, const uint8_t *data) /* {{{ */
-{
-	ngx_pinba_buf_t *buf = (ngx_pinba_buf_t *)buffer;
-
-	memcpy(buf->str.data + buf->str.len, data, len);
-	buf->str.len += len;
-}
-/* }}} */
 
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
 {
@@ -300,44 +291,42 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 }
 /* }}} */
 
-static int ngx_http_pinba_send_data(ngx_http_pinba_loc_conf_t *lcf, char *buf, size_t buf_len) /* {{{ */
+static int ngx_http_pinba_send_data(ngx_http_pinba_loc_conf_t *lcf, ngx_http_request_t *r, Pinba__Request *request, size_t packed_size) /* {{{ */
 {
-	size_t total_sent = 0;
-	int sent;
+	uint8_t *buf;
+	int res;
 
-	while (total_sent < buf_len) {
-		sent = sendto(lcf->socket.fd, buf + total_sent, buf_len - total_sent, 0,
-				(struct sockaddr *) &lcf->socket.sockaddr, lcf->socket.sockaddr_len);
-		if (sent < 0) {
-			break;
-		}
-		total_sent += sent;
+	if (packed_size == 0) {
+		packed_size = pinba__request__get_packed_size(request);
 	}
-	return total_sent;
+
+	buf = ngx_pcalloc(r->pool, packed_size);
+	pinba__request__pack(request, buf);
+
+	res = sendto(lcf->socket.fd, buf, packed_size, 0,
+				(struct sockaddr *) &lcf->socket.sockaddr, lcf->socket.sockaddr_len);
+	ngx_pfree(r->pool, buf);
+	return res;
 }
 /* }}} */
 
-static int ngx_http_pinba_push_into_buffer(ngx_http_pinba_loc_conf_t *lcf, char *buf, size_t buf_len) /* {{{ */
+static int ngx_http_pinba_push_into_buffer(ngx_http_pinba_loc_conf_t *lcf, ngx_http_request_t *r, Pinba__Request *request, int packed_size) /* {{{ */
 {
 	if (lcf->buffer_size != NGX_CONF_UNSET_SIZE  && lcf->buffer_size > 0) {
-		if (lcf->buffer == NULL) {
-			lcf->buffer = malloc(lcf->buffer_size);
-			if (!lcf->buffer) {
-				return -1;
+		if (lcf->request == NULL) {
+			lcf->request = request;
+		} else if ((lcf->request_size + packed_size) > lcf->buffer_size) {
+			ngx_http_pinba_send_data(lcf, r, lcf->request, 0);
+			pinba__request__free_unpacked(lcf->request, NULL);
+			lcf->request = request;
+		} else {
+			lcf->request->requests = realloc(lcf->request->requests, sizeof(Pinba__Request *) * (lcf->request->n_requests + 1));
+			if (lcf->request->requests) {
+				lcf->request->requests[lcf->request->n_requests] = request;
+				lcf->request->n_requests++;
+				lcf->request_size += packed_size;
 			}
 		}
-
-		if (buf_len > lcf->buffer_size) {
-			return -1;
-		}
-
-		if (buf_len > (lcf->buffer_size - lcf->buffer_used_len)) {
-			ngx_http_pinba_send_data(lcf, lcf->buffer, lcf->buffer_used_len);
-			lcf->buffer_used_len = 0;
-		}
-
-		memcpy(lcf->buffer + lcf->buffer_used_len, buf, buf_len);
-		lcf->buffer_used_len += buf_len;
 		return 0;
 	}
 	return -1;
@@ -388,9 +377,11 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		char hostname[PINBA_STR_BUFFER_SIZE] = {0}, server_name[PINBA_STR_BUFFER_SIZE] = {0}, script_name[PINBA_STR_BUFFER_SIZE] = {0};
 		ngx_time_t *tp;
 		ngx_msec_int_t ms;
-		ngx_pinba_buf_t buf;
 		size_t packed_size;
-		Pinba__Request request = PINBA__REQUEST__INIT;
+		Pinba__Request *request;
+		
+		request = malloc(sizeof(Pinba__Request));
+		pinba__request__init(request);
 
 		if (lcf->hostname[0] == '\0') {
 			if (gethostname(hostname, sizeof(hostname)) == 0) {
@@ -401,43 +392,35 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		}
 
 		/* hostname */
-		request.hostname = lcf->hostname;
+		request->hostname = strdup(lcf->hostname);
 
 		memcpy(server_name, r->headers_in.server.data, (r->headers_in.server.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : r->headers_in.server.len);
-		request.server_name = server_name;
+		request->server_name = strdup(server_name);
 
 		memcpy(script_name, r->uri.data, (r->uri.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE: r->uri.len);
-		request.script_name = script_name;
+		request->script_name = strdup(script_name);
 
-		request.document_size = r->connection->sent;
+		request->document_size = r->connection->sent;
 
 		tp = ngx_timeofday();
 		ms = (ngx_msec_int_t) ((tp->sec - r->start_sec) * 1000 + (tp->msec - r->start_msec));
 		ms = (ms >= 0) ? ms : 0;
-		request.request_time = (float)ms/1000;
+		request->request_time = (float)ms/1000;
 
-		request.status = r->headers_out.status;
-		request.has_status = 1;
+		request->status = r->headers_out.status;
+		request->has_status = 1;
 
-		/* just nullify other fields */
-		request.request_count = 0;
-		request.memory_peak = 0;
-		request.ru_utime = 0;
-		request.ru_stime = 0;
+		/* just nullify other fields for now */
+		request->request_count = 0;
+		request->memory_peak = 0;
+		request->ru_utime = 0;
+		request->ru_stime = 0;
 
-		packed_size = pinba__request__get_packed_size(&request);
-
-		buf.str.data = ngx_pcalloc(r->pool, packed_size);
-		buf.str.len = 0;
-		buf.base.append = ngx_http_pinba_str_append;
-
-		pinba__request__pack_to_buffer(&request, (ProtobufCBuffer *)&buf);
-
-		if (ngx_http_pinba_push_into_buffer(lcf, (char *)buf.str.data, buf.str.len) < 0) {
-			ngx_http_pinba_send_data(lcf, (char *)buf.str.data, buf.str.len);
+		packed_size = pinba__request__get_packed_size(request);
+		if (ngx_http_pinba_push_into_buffer(lcf, r, request, packed_size) < 0) {
+			ngx_http_pinba_send_data(lcf, r, request, packed_size);
+			pinba__request__free_unpacked(request, NULL);
 		}
-
-		ngx_pfree(r->pool, buf.str.data);
 	}
 
 	return NGX_OK;
