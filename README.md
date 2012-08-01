@@ -26,7 +26,7 @@ Configuration options
 ---------------------
 All configuration options must be added to the `http {}` section of the config file.
 
-`pinba_enabled` - on/off.  
+`pinba_enable` - on/off.
 The module is disabled by default.
 
 `pinba_server` - the adress of Pinba server.  
