@@ -400,6 +400,13 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		memcpy(script_name, r->uri.data, (r->uri.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE: r->uri.len);
 		request->script_name = strdup(script_name);
 
+#if (NGX_HTTP_SSL)
+		if (r->connection->ssl)
+			request->schema = strdup("https");
+		else
+#endif
+			request->schema = strdup("http");
+
 		request->document_size = r->connection->sent;
 
 		tp = ngx_timeofday();
