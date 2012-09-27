@@ -24,7 +24,8 @@ and then do `make install`.
 
 Configuration options
 ---------------------
-All configuration options must be added to the `http {}` section of the config file.
+All configuration options must be added to the `http {}` section of the config file,
+but you can always modify them in location/server sections.
 
 `pinba_enable` - on/off.
 The module is disabled by default.
@@ -45,4 +46,12 @@ Make sure there are no spaces between the values, though.
 In general case you don't need this option.  
 And to use it you'll have to upgrade Pinba server to the latest version first.  
 That said, you might want to prevent nginx overloading your network by sending tons of packets, especially if you have a heavy loaded server. So the module can keep the data in the buffer and will send it only when there is no free space left the buffer. You'll have to tweak this value yourself, I can only say that Pinba packet size depends mostly on the URLs that are requested and in general case is less than 100 bytes.
+
+`pinba_request_uri` - variable or a static string.
+Use this option to specify custom script name value.
+The default value is nginx `$request_uri` variable without its GET parameters.
+
+Example:
+`pinba_request_uri $document_uri;` - this is slightly different than the default value (might be updated during internal redirects etc.)
+`pinba_request_uri "custom_name";` - just a static string if you want to set it for some particular location instead of the default value.
 
