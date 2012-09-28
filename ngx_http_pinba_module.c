@@ -11,12 +11,13 @@
 
 #define PINBA_STR_BUFFER_SIZE 257
 
+ngx_str_t request_uri_name = ngx_string("pinba_request_uri");
+ngx_int_t request_uri_key;
+
 typedef struct {
 	ngx_flag_t   enable;
 	ngx_array_t *ignore_codes;
 	ngx_url_t    server;
-	ngx_int_t    request_uri_index;
-	ngx_str_t    request_uri_str;
 	char        *buffer;
 	size_t       buffer_size;
 	size_t       buffer_used_len;
@@ -36,7 +37,6 @@ static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf);
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-static char *ngx_http_pinba_request_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 typedef struct {
 	ProtobufCBuffer base;
@@ -46,36 +46,29 @@ typedef struct {
 static ngx_command_t  ngx_http_pinba_commands[] = { /* {{{ */
 
     { ngx_string("pinba_enable"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_FLAG,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
 
     { ngx_string("pinba_ignore_codes"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
       ngx_http_pinba_ignore_codes,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
 
     { ngx_string("pinba_buffer_size"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
       ngx_http_pinba_buffer_size,
       NGX_HTTP_LOC_CONF_OFFSET,
 	  0,
       NULL },
 
     { ngx_string("pinba_server"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
       ngx_http_pinba_server,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      0,
-      NULL },
-
-    { ngx_string("pinba_request_uri"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
-      ngx_http_pinba_request_uri,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -302,33 +295,6 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 }
 /* }}} */
 
-static char *ngx_http_pinba_request_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
-{
-	ngx_str_t *value, name;
-	ngx_http_pinba_loc_conf_t *lcf = conf;
-	ngx_int_t request_uri_index;
-
-	value = cf->args->elts;
-	name = value[1];
-
-	if (name.data[0] == '$') {
-		name.len--;
-		name.data++;
-		request_uri_index = ngx_http_get_variable_index(cf, &name);
-		if (request_uri_index == NGX_ERROR) {
-			return NGX_CONF_ERROR;
-		}
-		lcf->request_uri_index = request_uri_index;
-		lcf->request_uri_str.len = 0;
-		lcf->request_uri_str.data = NULL;
-	} else {
-		lcf->request_uri_str = name;
-		lcf->request_uri_index = NGX_ERROR;
-	}
-	return NGX_CONF_OK;
-}
-/* }}} */
-
 static int ngx_http_pinba_send_data(ngx_http_pinba_loc_conf_t *lcf, ngx_http_request_t *r, Pinba__Request *request, size_t packed_size) /* {{{ */
 {
 	uint8_t *buf;
@@ -375,6 +341,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 {
 	ngx_http_pinba_loc_conf_t  *lcf;
 	ngx_uint_t status, i, *pcode;
+	ngx_http_variable_value_t *request_uri;
 
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http pinba handler");
 
@@ -435,21 +402,11 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		memcpy(server_name, r->headers_in.server.data, (r->headers_in.server.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : r->headers_in.server.len);
 		request->server_name = strdup(server_name);
 
-		if (lcf->request_uri_index != NGX_ERROR) {
+		request_uri = ngx_http_get_variable(r, &request_uri_name, request_uri_key);
+
+		if (request_uri && !request_uri->not_found) {
 			/* try variable first */
-
-			ngx_http_variable_value_t *request_uri;
-
-			request_uri = ngx_http_get_flushed_variable(r, lcf->request_uri_index);
-			if (!request_uri || request_uri->not_found) {
-				ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "undefined variable used as pinba_request_uri value");
-			} else {
-				memcpy(script_name, request_uri->data, (request_uri->len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : request_uri->len);
-			}
-		} else if (lcf->request_uri_str.len && lcf->request_uri_str.data) {
-			/* then check if we have a static string there */
-
-			memcpy(script_name, lcf->request_uri_str.data, (lcf->request_uri_str.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : lcf->request_uri_str.len);
+			memcpy(script_name, request_uri->data, (request_uri->len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : request_uri->len);
 		} else {
 			u_char *q = NULL;
 			int uri_len = r->unparsed_uri.len;
@@ -514,7 +471,6 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 	conf->ignore_codes = NULL;
 	conf->socket.fd = -1;
 	conf->buffer_size = NGX_CONF_UNSET_SIZE;
-	conf->request_uri_index = NGX_ERROR;
 
 	return conf;
 }
@@ -526,11 +482,6 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 	ngx_http_pinba_loc_conf_t *conf = child;
 
 	ngx_conf_merge_value(conf->enable, prev->enable, 0);
-	ngx_conf_merge_str_value(conf->request_uri_str, prev->request_uri_str, "");
-
-	if (conf->request_uri_index == NGX_ERROR) {
-		conf->request_uri_index = prev->request_uri_index;
-	}
 
 	if (conf->ignore_codes == NULL) {
 		conf->ignore_codes = prev->ignore_codes;
@@ -571,6 +522,8 @@ static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf) /* {{{ */
 	}
 
 	*h = ngx_http_pinba_handler;
+
+	request_uri_key = ngx_hash_key_lc(request_uri_name.data, request_uri_name.len);
 
 	return NGX_OK;
 }
