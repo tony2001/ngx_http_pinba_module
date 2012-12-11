@@ -404,7 +404,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 
 		request_uri = ngx_http_get_variable(r, &request_uri_name, request_uri_key);
 
-		if (request_uri && !request_uri->not_found) {
+		if (request_uri && !request_uri->not_found && request_uri->len > 0) {
 			/* try variable first */
 			memcpy(script_name, request_uri->data, (request_uri->len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : request_uri->len);
 		} else {
