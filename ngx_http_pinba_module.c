@@ -12,7 +12,9 @@
 #define PINBA_STR_BUFFER_SIZE 257
 
 ngx_str_t request_uri_name = ngx_string("pinba_request_uri");
+ngx_str_t request_schema_name = ngx_string("pinba_request_schema");
 ngx_int_t request_uri_key;
+ngx_int_t request_schema_key;
 
 typedef struct {
 	ngx_flag_t   enable;
@@ -342,6 +344,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 	ngx_http_pinba_loc_conf_t  *lcf;
 	ngx_uint_t status, i, *pcode;
 	ngx_http_variable_value_t *request_uri;
+	ngx_http_variable_value_t *request_schema;
 
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http pinba handler");
 
@@ -424,12 +427,23 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		}
 		request->script_name = strdup(script_name);
 
+		request_schema = ngx_http_get_variable(r, &request_schema_name, request_schema_key);
+
+		if (request_schema && !request_schema->not_found && request_schema->len) {
+			request->schema = malloc(request_schema->len + 1);
+			if (request->schema) {
+				memcpy(request->schema, request_schema->data, request_schema->len);
+				request->schema[request_schema->len] = '\0';
+			}
+		} else {
+
 #if (NGX_HTTP_SSL)
-		if (r->connection->ssl)
-			request->schema = strdup("https");
-		else
+			if (r->connection->ssl)
+				request->schema = strdup("https");
+			else
 #endif
-			request->schema = strdup("http");
+				request->schema = strdup("http");
+		}
 
 		request->document_size = r->connection->sent;
 
@@ -524,6 +538,7 @@ static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf) /* {{{ */
 	*h = ngx_http_pinba_handler;
 
 	request_uri_key = ngx_hash_key_lc(request_uri_name.data, request_uri_name.len);
+	request_schema_key = ngx_hash_key_lc(request_schema_name.data, request_schema_name.len);
 
 	return NGX_OK;
 }
