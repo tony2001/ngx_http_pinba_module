@@ -19,6 +19,8 @@ ngx_int_t request_schema_key;
 typedef struct {
 	ngx_flag_t   enable;
 	ngx_array_t *ignore_codes;
+	ngx_str_t    request_timer_name;
+	ngx_int_t    request_timer_key;
 	ngx_url_t    server;
 	char        *buffer;
 	size_t       buffer_size;
@@ -38,6 +40,7 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf);
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_http_pinba_request_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 typedef struct {
@@ -66,6 +69,13 @@ static ngx_command_t  ngx_http_pinba_commands[] = { /* {{{ */
       ngx_http_pinba_buffer_size,
       NGX_HTTP_LOC_CONF_OFFSET,
 	  0,
+      NULL },
+
+    { ngx_string("pinba_request_timer"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
+      ngx_http_pinba_request_timer,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
       NULL },
 
     { ngx_string("pinba_server"),
@@ -110,6 +120,26 @@ ngx_module_t  ngx_http_pinba_module = { /* {{{ */
 };
 /* }}} */
 
+
+static char *ngx_http_pinba_request_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
+{
+	ngx_http_pinba_loc_conf_t *lcf = conf;
+	ngx_str_t *value;
+
+	value = cf->args->elts;
+	if (value[1].len == 0) {
+		ngx_str_set(&lcf->request_timer_name, "");
+		return NGX_CONF_OK;
+	}
+	if ((lcf->request_timer_name.data = ngx_pcalloc(cf->pool, value[1].len + 5)) == NULL)
+		return NGX_CONF_ERROR;
+
+	ngx_sprintf(lcf->request_timer_name.data, "arg_%V", &value[1]);
+	lcf->request_timer_name.len = ngx_strlen(lcf->request_timer_name.data);
+	lcf->request_timer_key = ngx_hash_key_lc(lcf->request_timer_name.data, lcf->request_timer_name.len);
+	return NGX_CONF_OK;
+}
+/* }}} */
 
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
 {
@@ -345,6 +375,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 	ngx_uint_t status, i, *pcode;
 	ngx_http_variable_value_t *request_uri;
 	ngx_http_variable_value_t *request_schema;
+	ngx_http_variable_value_t *request_timer;
 
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http pinba handler");
 
@@ -447,9 +478,32 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 
 		request->document_size = r->connection->sent;
 
-		tp = ngx_timeofday();
-		ms = (ngx_msec_int_t) ((tp->sec - r->start_sec) * 1000 + (tp->msec - r->start_msec));
-		ms = (ms >= 0) ? ms : 0;
+		if (lcf->request_timer_name.data && lcf->request_timer_name.len > 0) {
+			/* Try to find the variable in the query */
+			ngx_str_t value;
+			request_timer = ngx_http_get_variable(r,
+							      &lcf->request_timer_name,
+							      lcf->request_timer_key);
+			if (!request_timer || request_timer->not_found) {
+				ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+					       "pinba: timer %V not found",
+					       &lcf->request_timer_name);
+				pinba__request__free_unpacked(request, NULL);
+				return NGX_ERROR;
+			}
+			ms = ngx_atoi(request_timer->data, request_timer->len);
+			if (ms == NGX_ERROR) {
+				ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+					       "pinba: invalid timer value: %v",
+					       request_timer);
+				pinba__request__free_unpacked(request, NULL);
+				return NGX_ERROR;
+			}
+		} else {
+			tp = ngx_timeofday();
+			ms = (ngx_msec_int_t) ((tp->sec - r->start_sec) * 1000 + (tp->msec - r->start_msec));
+			ms = (ms >= 0) ? ms : 0;
+		}
 		request->request_time = (float)ms/1000;
 
 		request->status = r->headers_out.status;
@@ -503,6 +557,11 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 
 	if (conf->server.host.data == NULL && conf->server.port_text.data == NULL) {
 		conf->server = prev->server;
+	}
+
+	if (conf->request_timer_name.data == NULL) {
+		conf->request_timer_name = prev->request_timer_name;
+		conf->request_timer_key = prev->request_timer_key;
 	}
 
 	if (conf->socket.fd == -1) {
