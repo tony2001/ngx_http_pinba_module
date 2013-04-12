@@ -65,3 +65,6 @@ The default value is detected this way:
 	} else {
 		/* schema = "http" */
 	}
+
+`$pinba_tag_*` - variable
+When a variable name is prefixed by `$pinba_tag_`, a tagged value is added with the suffix as key and the value as value. Example of use: `set $pinba_tag_browser $http_user_agent`.

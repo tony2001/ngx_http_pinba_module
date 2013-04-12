@@ -377,6 +377,114 @@ static int ngx_http_pinba_push_into_buffer(ngx_http_pinba_loc_conf_t *lcf, ngx_h
 }
 /* }}} */
 
+static ngx_int_t ngx_http_pinba_tag_append(ngx_http_request_t *r,
+					   size_t *count,
+					   uint32_t **members,
+					   ngx_int_t idx) /* {{{ */
+{
+	uint32_t *new;
+	(*count)++;
+	new = realloc(*members, sizeof(*new) * (*count));
+	if (new == NULL)
+		return NGX_ERROR;
+	new[*count - 1] = idx;
+	*members = new;
+	return NGX_OK;
+}
+/* }}} */
+
+static ngx_int_t ngx_http_pinba_tag_add_to_dictionary(ngx_http_request_t *r,
+						      Pinba__Request *request,
+						      ngx_str_t *key) /* {{{ */
+{
+	/* Maybe the tag already exists? */
+	size_t i;
+	char **new;
+	for (i = 0; i < request->n_dictionary; i++) {
+		if (key->len != strlen(request->dictionary[i])) continue;
+		if (ngx_strncmp(request->dictionary[i], key->data, key->len) == 0)
+			return i;
+	}
+	/* No, add it */
+	request->n_dictionary++;
+	new = realloc(request->dictionary, sizeof(*new) * request->n_dictionary);
+	if (new == NULL)
+		return NGX_ERROR;
+	new[request->n_dictionary - 1] = strndup(key->data, key->len);
+	request->dictionary = new;
+	return request->n_dictionary - 1;
+}
+/* }}} */
+
+static ngx_int_t ngx_http_pinba_add_tags(ngx_http_request_t *r,
+					 Pinba__Request *request) /* {{{ */
+{
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_variable_value_t *v;
+    ngx_http_variable_t *k;
+    ngx_uint_t i, j;
+    ngx_int_t ik, iv;
+    ngx_str_t value, key;
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+    k = cmcf->variables.elts;
+    for (i = 0, j = 0; i < cmcf->variables.nelts; i++) {
+	    if (k[i].name.len < sizeof("pinba_tag_") ||
+		ngx_strncmp(k[i].name.data, "pinba_tag_", sizeof("pinba_tag_") - 1) != 0)
+		    continue;
+	    v = ngx_http_get_indexed_variable(r, i);
+	    if (v == NULL || v->not_found || !v->valid || v->len == 0) {
+		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 1,
+				   "pinba: cannot get value of tag variable %V", &k[i]);
+		    continue;
+	    }
+	    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 1,
+			   "pinba: found tag variable %V: %v", &k[i].name, v);
+
+	    value.data = v->data; value.len = v->len;
+	    key.data = k[i].name.data; key.data += sizeof("pinba_tag_") - 1;
+	    key.len = k[i].name.len; key.len -= sizeof("pinba_tag_") - 1;
+	    if ((ik = ngx_http_pinba_tag_add_to_dictionary(r, request,
+							   &key)) == NGX_ERROR ||
+		(iv = ngx_http_pinba_tag_add_to_dictionary(r, request,
+							   &value)) == NGX_ERROR ||
+		ngx_http_pinba_tag_append(r,
+					  &request->n_timer_tag_name,
+					  &request->timer_tag_name,
+					  ik) == NGX_ERROR ||
+		ngx_http_pinba_tag_append(r,
+					  &request->n_timer_tag_value,
+					  &request->timer_tag_value,
+					  iv) == NGX_ERROR)
+		    return NGX_ERROR;
+
+	    j++;
+    }
+
+    if (j > 0) {
+	    request->timer_tag_count = calloc(1, sizeof(*request->timer_tag_count));
+	    if (request->timer_tag_count == NULL)
+		    return NGX_ERROR;
+	    *request->timer_tag_count = j;
+	    request->n_timer_tag_count = 1;
+
+	    /* We account one hit only */
+	    request->timer_hit_count = calloc(1, sizeof(*request->timer_hit_count));
+	    if (request->timer_hit_count == NULL)
+		    return NGX_ERROR;
+	    *request->timer_hit_count = 1;
+	    request->n_timer_hit_count = 1;
+
+	    /* We copy the timer value */
+	    request->timer_value = calloc(1, sizeof(*request->timer_value));
+	    if (request->timer_value == NULL)
+		    return NGX_ERROR;
+	    *request->timer_value = request->request_time;
+	    request->n_timer_value = 1;
+    }
+    return NGX_OK;
+}
+/* }}} */
+
 ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 {
 	ngx_http_pinba_loc_conf_t  *lcf;
@@ -530,6 +638,12 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		request->memory_peak = 0;
 		request->ru_utime = 0;
 		request->ru_stime = 0;
+
+		/* add tags */
+		if (ngx_http_pinba_add_tags(r, request) == NGX_ERROR) {
+			pinba__request__free_unpacked(request, NULL);
+			return NGX_ERROR;
+		}
 
 		packed_size = pinba__request__get_packed_size(request);
 		if (ngx_http_pinba_push_into_buffer(lcf, r, request, packed_size) < 0) {
