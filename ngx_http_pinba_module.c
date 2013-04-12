@@ -21,6 +21,7 @@ typedef struct {
 	ngx_array_t *ignore_codes;
 	ngx_str_t    request_timer_name;
 	ngx_int_t    request_timer_key;
+	ngx_msec_t   max_timer;
 	ngx_url_t    server;
 	char        *buffer;
 	size_t       buffer_size;
@@ -76,6 +77,13 @@ static ngx_command_t  ngx_http_pinba_commands[] = { /* {{{ */
       ngx_http_pinba_request_timer,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
+      NULL },
+
+    { ngx_string("pinba_max_timer_value"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
+      ngx_conf_set_msec_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_pinba_loc_conf_t, max_timer),
       NULL },
 
     { ngx_string("pinba_server"),
@@ -502,7 +510,15 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		} else {
 			tp = ngx_timeofday();
 			ms = (ngx_msec_int_t) ((tp->sec - r->start_sec) * 1000 + (tp->msec - r->start_msec));
-			ms = (ms >= 0) ? ms : 0;
+		}
+		ms = (ms >= 0) ? ms : 0;
+		if (lcf->max_timer != NGX_CONF_UNSET_MSEC &&
+		    ms > lcf->max_timer) {
+			ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+				       "pinba: out of bound timer value: %M > %M",
+				       ms, lcf->max_timer);
+			pinba__request__free_unpacked(request, NULL);
+			return NGX_ERROR;
 		}
 		request->request_time = (float)ms/1000;
 
@@ -539,6 +555,7 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 	conf->ignore_codes = NULL;
 	conf->socket.fd = -1;
 	conf->buffer_size = NGX_CONF_UNSET_SIZE;
+	conf->max_timer = NGX_CONF_UNSET_MSEC;
 
 	return conf;
 }
@@ -550,6 +567,7 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 	ngx_http_pinba_loc_conf_t *conf = child;
 
 	ngx_conf_merge_value(conf->enable, prev->enable, 0);
+	ngx_conf_merge_value(conf->max_timer, prev->max_timer, NGX_CONF_UNSET_MSEC);
 
 	if (conf->ignore_codes == NULL) {
 		conf->ignore_codes = prev->ignore_codes;

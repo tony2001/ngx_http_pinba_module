@@ -50,6 +50,9 @@ That said, you might want to prevent nginx overloading your network by sending t
 `pinba_request_timer` - string
 Use this option to specify a custom timer to use in place of the computed timer. The timer is provided by the user in a request. If the timer is absent, nothing will be loggued by Pinba.
 
+`pinba_max_timer_value` - integer number
+Use this option to specify a maximum bound for a timer and avoid logging too large timers. If absent, no bound is enforced on timers.
+
 `$pinba_request_uri` - variable.
 Use this variable to specify custom script name value, the module always checks if this variable is defined and if it is, uses it.
 The default value is nginx `$request_uri` variable without its GET parameters.
