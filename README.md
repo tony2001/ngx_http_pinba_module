@@ -47,6 +47,12 @@ In general case you don't need this option.
 And to use it you'll have to upgrade Pinba server to the latest version first.  
 That said, you might want to prevent nginx overloading your network by sending tons of packets, especially if you have a heavy loaded server. So the module can keep the data in the buffer and will send it only when there is no free space left the buffer. You'll have to tweak this value yourself, I can only say that Pinba packet size depends mostly on the URLs that are requested and in general case is less than 100 bytes.
 
+`pinba_request_timer` - string
+Use this option to specify a custom timer to use in place of the computed timer. The timer is provided by the user in a request. If the timer is absent, nothing will be loggued by Pinba.
+
+`pinba_max_timer_value` - integer number
+Use this option to specify a maximum bound for a timer and avoid logging too large timers. If absent, no bound is enforced on timers.
+
 `$pinba_request_uri` - variable.
 Use this variable to specify custom script name value, the module always checks if this variable is defined and if it is, uses it.
 The default value is nginx `$request_uri` variable without its GET parameters.
@@ -60,3 +66,5 @@ The default value is detected this way:
 		/* schema = "http" */
 	}
 
+`$pinba_tag_*` - variable
+When a variable name is prefixed by `$pinba_tag_`, a tagged value is added with the suffix as key and the value as value. Example of use: `set $pinba_tag_browser $http_user_agent`.

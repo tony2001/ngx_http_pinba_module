@@ -19,6 +19,9 @@ ngx_int_t request_schema_key;
 typedef struct {
 	ngx_flag_t   enable;
 	ngx_array_t *ignore_codes;
+	ngx_str_t    request_timer_name;
+	ngx_int_t    request_timer_key;
+	ngx_msec_t   max_timer;
 	ngx_url_t    server;
 	char        *buffer;
 	size_t       buffer_size;
@@ -38,6 +41,7 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf);
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_http_pinba_request_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 typedef struct {
@@ -66,6 +70,20 @@ static ngx_command_t  ngx_http_pinba_commands[] = { /* {{{ */
       ngx_http_pinba_buffer_size,
       NGX_HTTP_LOC_CONF_OFFSET,
 	  0,
+      NULL },
+
+    { ngx_string("pinba_request_timer"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
+      ngx_http_pinba_request_timer,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("pinba_max_timer_value"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
+      ngx_conf_set_msec_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_pinba_loc_conf_t, max_timer),
       NULL },
 
     { ngx_string("pinba_server"),
@@ -110,6 +128,26 @@ ngx_module_t  ngx_http_pinba_module = { /* {{{ */
 };
 /* }}} */
 
+
+static char *ngx_http_pinba_request_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
+{
+	ngx_http_pinba_loc_conf_t *lcf = conf;
+	ngx_str_t *value;
+
+	value = cf->args->elts;
+	if (value[1].len == 0) {
+		ngx_str_set(&lcf->request_timer_name, "");
+		return NGX_CONF_OK;
+	}
+	if ((lcf->request_timer_name.data = ngx_pcalloc(cf->pool, value[1].len + 5)) == NULL)
+		return NGX_CONF_ERROR;
+
+	ngx_sprintf(lcf->request_timer_name.data, "arg_%V", &value[1]);
+	lcf->request_timer_name.len = ngx_strlen(lcf->request_timer_name.data);
+	lcf->request_timer_key = ngx_hash_key_lc(lcf->request_timer_name.data, lcf->request_timer_name.len);
+	return NGX_CONF_OK;
+}
+/* }}} */
 
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
 {
@@ -339,12 +377,121 @@ static int ngx_http_pinba_push_into_buffer(ngx_http_pinba_loc_conf_t *lcf, ngx_h
 }
 /* }}} */
 
+static ngx_int_t ngx_http_pinba_tag_append(ngx_http_request_t *r,
+					   size_t *count,
+					   uint32_t **members,
+					   ngx_int_t idx) /* {{{ */
+{
+	uint32_t *new;
+	(*count)++;
+	new = realloc(*members, sizeof(*new) * (*count));
+	if (new == NULL)
+		return NGX_ERROR;
+	new[*count - 1] = idx;
+	*members = new;
+	return NGX_OK;
+}
+/* }}} */
+
+static ngx_int_t ngx_http_pinba_tag_add_to_dictionary(ngx_http_request_t *r,
+						      Pinba__Request *request,
+						      ngx_str_t *key) /* {{{ */
+{
+	/* Maybe the tag already exists? */
+	size_t i;
+	char **new;
+	for (i = 0; i < request->n_dictionary; i++) {
+		if (key->len != strlen(request->dictionary[i])) continue;
+		if (ngx_strncmp(request->dictionary[i], key->data, key->len) == 0)
+			return i;
+	}
+	/* No, add it */
+	request->n_dictionary++;
+	new = realloc(request->dictionary, sizeof(*new) * request->n_dictionary);
+	if (new == NULL)
+		return NGX_ERROR;
+	new[request->n_dictionary - 1] = strndup(key->data, key->len);
+	request->dictionary = new;
+	return request->n_dictionary - 1;
+}
+/* }}} */
+
+static ngx_int_t ngx_http_pinba_add_tags(ngx_http_request_t *r,
+					 Pinba__Request *request) /* {{{ */
+{
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_variable_value_t *v;
+    ngx_http_variable_t *k;
+    ngx_uint_t i, j;
+    ngx_int_t ik, iv;
+    ngx_str_t value, key;
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+    k = cmcf->variables.elts;
+    for (i = 0, j = 0; i < cmcf->variables.nelts; i++) {
+	    if (k[i].name.len < sizeof("pinba_tag_") ||
+		ngx_strncmp(k[i].name.data, "pinba_tag_", sizeof("pinba_tag_") - 1) != 0)
+		    continue;
+	    v = ngx_http_get_indexed_variable(r, i);
+	    if (v == NULL || v->not_found || !v->valid || v->len == 0) {
+		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 1,
+				   "pinba: cannot get value of tag variable %V", &k[i]);
+		    continue;
+	    }
+	    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 1,
+			   "pinba: found tag variable %V: %v", &k[i].name, v);
+
+	    value.data = v->data; value.len = v->len;
+	    key.data = k[i].name.data; key.data += sizeof("pinba_tag_") - 1;
+	    key.len = k[i].name.len; key.len -= sizeof("pinba_tag_") - 1;
+	    if ((ik = ngx_http_pinba_tag_add_to_dictionary(r, request,
+							   &key)) == NGX_ERROR ||
+		(iv = ngx_http_pinba_tag_add_to_dictionary(r, request,
+							   &value)) == NGX_ERROR ||
+		ngx_http_pinba_tag_append(r,
+					  &request->n_timer_tag_name,
+					  &request->timer_tag_name,
+					  ik) == NGX_ERROR ||
+		ngx_http_pinba_tag_append(r,
+					  &request->n_timer_tag_value,
+					  &request->timer_tag_value,
+					  iv) == NGX_ERROR)
+		    return NGX_ERROR;
+
+	    j++;
+    }
+
+    if (j > 0) {
+	    request->timer_tag_count = calloc(1, sizeof(*request->timer_tag_count));
+	    if (request->timer_tag_count == NULL)
+		    return NGX_ERROR;
+	    *request->timer_tag_count = j;
+	    request->n_timer_tag_count = 1;
+
+	    /* We account one hit only */
+	    request->timer_hit_count = calloc(1, sizeof(*request->timer_hit_count));
+	    if (request->timer_hit_count == NULL)
+		    return NGX_ERROR;
+	    *request->timer_hit_count = 1;
+	    request->n_timer_hit_count = 1;
+
+	    /* We copy the timer value */
+	    request->timer_value = calloc(1, sizeof(*request->timer_value));
+	    if (request->timer_value == NULL)
+		    return NGX_ERROR;
+	    *request->timer_value = request->request_time;
+	    request->n_timer_value = 1;
+    }
+    return NGX_OK;
+}
+/* }}} */
+
 ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 {
 	ngx_http_pinba_loc_conf_t  *lcf;
 	ngx_uint_t status, i, *pcode;
 	ngx_http_variable_value_t *request_uri;
 	ngx_http_variable_value_t *request_schema;
+	ngx_http_variable_value_t *request_timer;
 
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http pinba handler");
 
@@ -447,9 +594,40 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 
 		request->document_size = r->connection->sent;
 
-		tp = ngx_timeofday();
-		ms = (ngx_msec_int_t) ((tp->sec - r->start_sec) * 1000 + (tp->msec - r->start_msec));
+		if (lcf->request_timer_name.data && lcf->request_timer_name.len > 0) {
+			/* Try to find the variable in the query */
+			ngx_str_t value;
+			request_timer = ngx_http_get_variable(r,
+							      &lcf->request_timer_name,
+							      lcf->request_timer_key);
+			if (!request_timer || request_timer->not_found) {
+				ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+					       "pinba: timer %V not found",
+					       &lcf->request_timer_name);
+				pinba__request__free_unpacked(request, NULL);
+				return NGX_ERROR;
+			}
+			ms = ngx_atoi(request_timer->data, request_timer->len);
+			if (ms == NGX_ERROR) {
+				ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+					       "pinba: invalid timer value: %v",
+					       request_timer);
+				pinba__request__free_unpacked(request, NULL);
+				return NGX_ERROR;
+			}
+		} else {
+			tp = ngx_timeofday();
+			ms = (ngx_msec_int_t) ((tp->sec - r->start_sec) * 1000 + (tp->msec - r->start_msec));
+		}
 		ms = (ms >= 0) ? ms : 0;
+		if (lcf->max_timer != NGX_CONF_UNSET_MSEC &&
+		    ms > lcf->max_timer) {
+			ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+				       "pinba: out of bound timer value: %M > %M",
+				       ms, lcf->max_timer);
+			pinba__request__free_unpacked(request, NULL);
+			return NGX_ERROR;
+		}
 		request->request_time = (float)ms/1000;
 
 		request->status = r->headers_out.status;
@@ -460,6 +638,12 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		request->memory_peak = 0;
 		request->ru_utime = 0;
 		request->ru_stime = 0;
+
+		/* add tags */
+		if (ngx_http_pinba_add_tags(r, request) == NGX_ERROR) {
+			pinba__request__free_unpacked(request, NULL);
+			return NGX_ERROR;
+		}
 
 		packed_size = pinba__request__get_packed_size(request);
 		if (ngx_http_pinba_push_into_buffer(lcf, r, request, packed_size) < 0) {
@@ -485,6 +669,7 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 	conf->ignore_codes = NULL;
 	conf->socket.fd = -1;
 	conf->buffer_size = NGX_CONF_UNSET_SIZE;
+	conf->max_timer = NGX_CONF_UNSET_MSEC;
 
 	return conf;
 }
@@ -496,6 +681,7 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 	ngx_http_pinba_loc_conf_t *conf = child;
 
 	ngx_conf_merge_value(conf->enable, prev->enable, 0);
+	ngx_conf_merge_value(conf->max_timer, prev->max_timer, NGX_CONF_UNSET_MSEC);
 
 	if (conf->ignore_codes == NULL) {
 		conf->ignore_codes = prev->ignore_codes;
@@ -503,6 +689,11 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 
 	if (conf->server.host.data == NULL && conf->server.port_text.data == NULL) {
 		conf->server = prev->server;
+	}
+
+	if (conf->request_timer_name.data == NULL) {
+		conf->request_timer_name = prev->request_timer_name;
+		conf->request_timer_key = prev->request_timer_key;
 	}
 
 	if (conf->socket.fd == -1) {
