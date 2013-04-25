@@ -13,8 +13,10 @@
 
 ngx_str_t request_uri_name = ngx_string("pinba_request_uri");
 ngx_str_t request_schema_name = ngx_string("pinba_request_schema");
+ngx_str_t hostname_name = ngx_string("pinba_hostname");
 ngx_int_t request_uri_key;
 ngx_int_t request_schema_key;
+ngx_int_t hostname_key;
 
 typedef struct {
 	ngx_flag_t   enable;
@@ -345,6 +347,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 	ngx_uint_t status, i, *pcode;
 	ngx_http_variable_value_t *request_uri;
 	ngx_http_variable_value_t *request_schema;
+	ngx_http_variable_value_t *hostname_var;
 
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http pinba handler");
 
@@ -400,7 +403,17 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		}
 
 		/* hostname */
-		request->hostname = strdup(lcf->hostname);
+		hostname_var = ngx_http_get_variable(r, &hostname_name, hostname_key);
+
+		if (hostname_var && !hostname_var->not_found && hostname_var->len) {
+			request->hostname = malloc(hostname_var->len + 1);
+			if (request->hostname) {
+				memcpy(request->hostname, hostname_var->data, hostname_var->len);
+				request->hostname[hostname_var->len] = '\0';
+			}
+		} else {
+			request->hostname = strdup(lcf->hostname);
+		}
 
 		memcpy(server_name, r->headers_in.server.data, (r->headers_in.server.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : r->headers_in.server.len);
 		request->server_name = strdup(server_name);
@@ -539,6 +552,7 @@ static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf) /* {{{ */
 
 	request_uri_key = ngx_hash_key_lc(request_uri_name.data, request_uri_name.len);
 	request_schema_key = ngx_hash_key_lc(request_schema_name.data, request_schema_name.len);
+	hostname_key = ngx_hash_key_lc(hostname_name.data, hostname_name.len);
 
 	return NGX_OK;
 }
