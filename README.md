@@ -51,6 +51,10 @@ That said, you might want to prevent nginx overloading your network by sending t
 Use this variable to specify custom script name value, the module always checks if this variable is defined and if it is, uses it.
 The default value is nginx `$request_uri` variable without its GET parameters.
 
+`$pinba_hostname` - variable.
+Use this variable to specify custom hostname value, the module always checks if this variable is defined and if it is, uses it.
+The default value is the result of gethostname() function.
+
 `$pinba_request_schema` - variable.
 Use this variable to specify custom HTTP schema, the module always checks if this variable is defined and if it is, uses it.
 The default value is detected this way: 
