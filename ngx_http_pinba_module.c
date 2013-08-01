@@ -433,11 +433,11 @@ static ngx_int_t ngx_http_pinba_add_tags(ngx_http_request_t *r,
 		    continue;
 	    v = ngx_http_get_indexed_variable(r, i);
 	    if (v == NULL || v->not_found || !v->valid || v->len == 0) {
-		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 1,
+		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
 				   "pinba: cannot get value of tag variable %V", &k[i]);
 		    continue;
 	    }
-	    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 1,
+	    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
 			   "pinba: found tag variable %V: %v", &k[i].name, v);
 
 	    value.data = v->data; value.len = v->len;
