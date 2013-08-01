@@ -429,7 +429,8 @@ static ngx_int_t ngx_http_pinba_add_tags(ngx_http_request_t *r,
     k = cmcf->variables.elts;
     for (i = 0, j = 0; i < cmcf->variables.nelts; i++) {
 	    if (k[i].name.len < sizeof("pinba_tag_") ||
-		ngx_strncmp(k[i].name.data, "pinba_tag_", sizeof("pinba_tag_") - 1) != 0)
+		ngx_strncmp(k[i].name.data, "pinba_tag_", sizeof("pinba_tag_") - 1) != 0 ||
+                r->variables[i].not_found || !r->variables[i].valid)
 		    continue;
 	    v = ngx_http_get_indexed_variable(r, i);
 	    if (v == NULL || v->not_found || !v->valid || v->len == 0) {
