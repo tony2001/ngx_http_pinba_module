@@ -57,7 +57,8 @@ The default value is the result of gethostname() function.
 
 `$pinba_request_schema` - variable.
 Use this variable to specify custom HTTP schema, the module always checks if this variable is defined and if it is, uses it.
-The default value is detected this way: 
+The default value is detected this way:
+
 	if (r->connection->ssl) {
 		/* schema = "https" */
 	} else {
