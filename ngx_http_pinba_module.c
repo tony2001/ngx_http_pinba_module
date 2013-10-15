@@ -6,10 +6,12 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include "uthash.h"
 
 #include "pinba.pb-c.h"
 
 #define PINBA_STR_BUFFER_SIZE 257
+#define PINBA_WORD_SIZE 256
 
 ngx_str_t request_uri_name = ngx_string("pinba_request_uri");
 ngx_str_t request_schema_name = ngx_string("pinba_request_schema");
@@ -17,6 +19,19 @@ ngx_str_t hostname_name = ngx_string("pinba_hostname");
 ngx_int_t request_uri_key;
 ngx_int_t request_schema_key;
 ngx_int_t hostname_key;
+
+typedef struct {
+	char name[PINBA_WORD_SIZE];
+	int name_len;
+	char value[PINBA_WORD_SIZE];
+	int value_len;
+} ngx_pinba_tag_t;
+
+typedef struct {
+	char str[PINBA_WORD_SIZE];
+	unsigned int id;
+	UT_hash_handle hh;
+} ngx_pinba_word_t;
 
 typedef struct {
 	ngx_flag_t   enable;
@@ -33,12 +48,14 @@ typedef struct {
 	char hostname[PINBA_STR_BUFFER_SIZE];
 	Pinba__Request *request;
 	size_t          request_size;
+	ngx_array_t    *tags;
 } ngx_http_pinba_loc_conf_t;
 
 static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf);
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_http_pinba_tag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
@@ -59,6 +76,13 @@ static ngx_command_t  ngx_http_pinba_commands[] = { /* {{{ */
     { ngx_string("pinba_ignore_codes"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
       ngx_http_pinba_ignore_codes,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("pinba_tag"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE2,
+      ngx_http_pinba_tag,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -112,7 +136,6 @@ ngx_module_t  ngx_http_pinba_module = { /* {{{ */
 };
 /* }}} */
 
-
 static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
 {
 	ngx_http_pinba_loc_conf_t *lcf = conf;
@@ -155,13 +178,13 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 			data_copy = ngx_pstrdup(cf->pool, &value[i]);
 			dash_copy = data_copy + code1_len;
 			*dash_copy = '\0';
-			
+
 			code1 = ngx_atoi(data_copy, code1_len);
 			if (code1 < 100 || code1 > 599) {
 				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\", values must not be less than 100 or greater than 599", &value[i]);
 				return NGX_CONF_ERROR;
 			}
-			
+
 			code2 = ngx_atoi(dash_copy + 1, code2_len - 1);
 			if (code2 < 100 || code2 > 599) {
 				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\", values must not be less than 100 or greater than 599", &value[i]);
@@ -199,6 +222,43 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 		}
 	}
 
+	return NGX_CONF_OK;
+}
+/* }}} */
+
+static char *ngx_http_pinba_tag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
+{
+	ngx_http_pinba_loc_conf_t *lcf = conf;
+	ngx_str_t *value;
+	ngx_pinba_tag_t *tag;
+
+	value = cf->args->elts;
+
+	if (lcf->tags == NULL) {
+		lcf->tags = ngx_array_create(cf->pool, 4, sizeof(ngx_pinba_tag_t));
+		if (lcf->tags == NULL) {
+			return NGX_CONF_ERROR;
+		}
+	}
+
+	tag = ngx_array_push(lcf->tags);
+	if (tag == NULL) {
+		return NGX_CONF_ERROR;
+	}
+
+	tag->name_len = value[1].len;
+	if (value[1].len > PINBA_WORD_SIZE) {
+		tag->name_len = PINBA_WORD_SIZE;
+	}
+	memcpy(tag->name, value[1].data, tag->name_len);
+	tag->name[tag->name_len] = '\0';
+
+	tag->value_len = value[2].len;
+	if (value[2].len > PINBA_WORD_SIZE) {
+		tag->value_len = PINBA_WORD_SIZE;
+	}
+	memcpy(tag->value, value[2].data, tag->value_len);
+	tag->value[tag->value_len] = '\0';
 	return NGX_CONF_OK;
 }
 /* }}} */
@@ -341,8 +401,30 @@ static int ngx_http_pinba_push_into_buffer(ngx_http_pinba_loc_conf_t *lcf, ngx_h
 }
 /* }}} */
 
+static inline int ngx_pinba_add_word(ngx_pinba_word_t **words, char *index_str, int index_str_len, unsigned int *word_id) /* {{{ */
+{
+	ngx_pinba_word_t *word;
+
+	HASH_FIND_STR(*words, index_str, word);
+	if (!word) {
+		word = calloc(1, sizeof(ngx_pinba_word_t));
+		if (word) {
+			memcpy(word->str, index_str, index_str_len + 1);
+			word->id = (*word_id)++;
+
+			HASH_ADD_STR(*words, str, word);
+			return 1;
+		} else {
+			return -1;
+		}
+	}
+	return 0;
+}
+/* }}} */
+
 ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 {
+	unsigned int word_id = 0;
 	ngx_http_pinba_loc_conf_t  *lcf;
 	ngx_uint_t status, i, *pcode;
 	ngx_http_variable_value_t *request_uri;
@@ -354,7 +436,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 	lcf = ngx_http_get_module_loc_conf(r, ngx_http_pinba_module);
 
 	/* bail out right away if disabled */
-	if (lcf->enable == 0) {
+	if (lcf->enable != 1) {
 		return NGX_OK;
 	}
 
@@ -381,7 +463,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		/* no socket -> no data */
 		return NGX_OK; /* doesn't matter, the return status is ignored anyway */
 	}
-	
+
 	/* ok, we may proceed then.. */
 
 	{
@@ -390,7 +472,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		ngx_msec_int_t ms;
 		size_t packed_size;
 		Pinba__Request *request;
-		
+
 		request = malloc(sizeof(Pinba__Request));
 		pinba__request__init(request);
 
@@ -468,6 +550,58 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		request->status = r->headers_out.status;
 		request->has_status = 1;
 
+		/* request tags */
+		if (lcf->tags != NULL) {
+			ngx_uint_t i, n;
+			ngx_pinba_tag_t *tags;
+			ngx_pinba_word_t *words = NULL, *word, *tmp;
+
+			tags = lcf->tags->elts;
+
+			/* create a dictionary first (a unique string hash in fact) */
+			for (i = 0; i < lcf->tags->nelts; i++) {
+				ngx_pinba_tag_t *tag = &tags[i];
+				ngx_pinba_add_word(&words, tag->name, tag->name_len, &word_id);
+				ngx_pinba_add_word(&words, tag->value, tag->value_len, &word_id);
+			}
+
+			n = HASH_COUNT(words);
+
+			request->tag_name = malloc(sizeof(int) * n);
+			request->tag_value = malloc(sizeof(int) * n);
+			request->dictionary = malloc(sizeof(char *) * n);
+
+			if (request->tag_name && request->tag_value && request->dictionary) {
+				n = 0;
+				/* then iterate all the strings again and use their IDs instead of values */
+				for (i = 0; i < lcf->tags->nelts; i++) {
+					ngx_pinba_tag_t *tag = &tags[i];
+
+					HASH_FIND_STR(words, tag->name, word);
+					if (!word) {
+						continue;
+					}
+					request->tag_name[n] = word->id;
+
+					HASH_FIND_STR(words, tag->value, word);
+					if (!word) {
+						continue;
+					}
+					request->tag_value[n] = word->id;
+					n++;
+				}
+				request->n_tag_name = n;
+				request->n_tag_value = n;
+			}
+
+			HASH_ITER(hh, words, word, tmp) {
+				request->dictionary[word->id] = strdup(word->str);
+				HASH_DEL(words, word);
+				free(word);
+				request->n_dictionary++;
+			}
+		}
+
 		/* just nullify other fields for now */
 		request->request_count = 0;
 		request->memory_peak = 0;
@@ -496,6 +630,7 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 
 	conf->enable = NGX_CONF_UNSET;
 	conf->ignore_codes = NULL;
+	conf->tags = NULL;
 	conf->socket.fd = -1;
 	conf->buffer_size = NGX_CONF_UNSET_SIZE;
 
@@ -514,6 +649,10 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 		conf->ignore_codes = prev->ignore_codes;
 	}
 
+	if (conf->tags == NULL) {
+		conf->tags = prev->tags;
+	}
+
 	if (conf->server.host.data == NULL && conf->server.port_text.data == NULL) {
 		conf->server = prev->server;
 	}
@@ -521,7 +660,7 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 	if (conf->socket.fd == -1) {
 		conf->socket = prev->socket;
 	}
-	
+
 	if (conf->buffer_size == NGX_CONF_UNSET_SIZE) {
 		conf->buffer_size = prev->buffer_size;
 		conf->buffer_used_len = 0;
