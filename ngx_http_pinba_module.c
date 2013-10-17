@@ -131,7 +131,7 @@ static ngx_command_t  ngx_http_pinba_commands[] = { /* {{{ */
       0,
       NULL },
 
-	{ ngx_string("pinba_timer"),
+    { ngx_string("pinba_timer"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_BLOCK|NGX_CONF_TAKE12,
       ngx_http_pinba_timer_block,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -190,6 +190,7 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 	if (lcf->ignore_codes == NULL) {
 		lcf->ignore_codes = ngx_array_create(cf->pool, 4, sizeof(ngx_uint_t));
 		if (lcf->ignore_codes == NULL) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to create ignore codes array (out of mem?)");
 			return NGX_CONF_ERROR;
 		}
 	}
@@ -208,7 +209,7 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 			code2_len = value[i].len - code1_len;
 
 			if (code1_len < 3 || code2_len < 3) {
-				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\"", &value[i]);
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] invalid status code value \"%V\"", &value[i]);
 				return NGX_CONF_ERROR;
 			}
 
@@ -218,24 +219,25 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 
 			code1 = ngx_atoi(data_copy, code1_len);
 			if (code1 < 100 || code1 > 599) {
-				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\", values must not be less than 100 or greater than 599", &value[i]);
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] invalid status code value \"%V\", values must not be less than 100 or greater than 599", &value[i]);
 				return NGX_CONF_ERROR;
 			}
 
 			code2 = ngx_atoi(dash_copy + 1, code2_len - 1);
 			if (code2 < 100 || code2 > 599) {
-				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\", values must not be less than 100 or greater than 599", &value[i]);
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] invalid status code value \"%V\", values must not be less than 100 or greater than 599", &value[i]);
 				return NGX_CONF_ERROR;
 			}
 
 			if (code1 >= code2) {
-				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\", range end must be greater than range start", &value[i]);
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] invalid status code value \"%V\", range end must be greater than range start", &value[i]);
 				return NGX_CONF_ERROR;
 			}
 
 			for (n = code1; n <= code2; n++) {
 				pcode = ngx_array_push(lcf->ignore_codes);
 				if (pcode == NULL) {
+					ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate new ignore codes array item (out of mem?)");
 					return NGX_CONF_ERROR;
 				}
 				*pcode = (ngx_uint_t)n;
@@ -246,12 +248,13 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 			/* just a simple value */
 			code = ngx_atoi(value[i].data, value[i].len);
 			if (code < 100 || code > 599) {
-				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid status code value \"%V\"", &value[i]);
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] invalid status code value \"%V\"", &value[i]);
 				return NGX_CONF_ERROR;
 			}
 
 			pcode = ngx_array_push(lcf->ignore_codes);
 			if (pcode == NULL) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate new ignore codes array item (out of mem?)");
 				return NGX_CONF_ERROR;
 			}
 
@@ -274,6 +277,7 @@ static char *ngx_pinba_parse_tag_str(ngx_conf_t *cf, ngx_pinba_tag_t *tag, ngx_s
 		name->data++;
 		tag->name_index = ngx_http_get_variable_index(cf, name);
 		if (tag->name_index == NGX_ERROR) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] using uninitialized variable for tag name");
 			return NGX_CONF_ERROR;
 		}
 	} else {
@@ -287,6 +291,7 @@ static char *ngx_pinba_parse_tag_str(ngx_conf_t *cf, ngx_pinba_tag_t *tag, ngx_s
 		value->data++;
 		tag->value_index = ngx_http_get_variable_index(cf, value);
 		if (tag->value_index == NGX_ERROR) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] using uninitialized variable for tag value");
 			return NGX_CONF_ERROR;
 		}
 	} else {
@@ -366,12 +371,14 @@ static char *ngx_http_pinba_tag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) 
 	if (lcf->tags == NULL) {
 		lcf->tags = ngx_array_create(cf->pool, 4, sizeof(ngx_pinba_tag_t));
 		if (lcf->tags == NULL) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate request tags array (out of mem?)");
 			return NGX_CONF_ERROR;
 		}
 	}
 
 	tag = ngx_array_push(lcf->tags);
 	if (tag == NULL) {
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate new request tags array item (out of mem?)");
 		return NGX_CONF_ERROR;
 	}
 
@@ -396,8 +403,11 @@ static char *ngx_http_pinba_timer_handler(ngx_conf_t *cf, ngx_command_t *dummy, 
 	tag_name = value[0];
 	tag_value = value[1];
 
+	timer->tag_cnt++;
+
 	tag = ngx_array_push(timer->tags);
 	if (tag == NULL) {
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate new timer tags array item (out of mem?)");
 		return NGX_CONF_ERROR;
 	}
 
@@ -420,21 +430,23 @@ static char *ngx_http_pinba_timer_block(ngx_conf_t *cf, ngx_command_t *cmd, void
 	if (lcf->timers == NULL) {
 		lcf->timers = ngx_array_create(cf->pool, 4, sizeof(ngx_pinba_timer_t));
 		if (lcf->timers == NULL) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate timers array (out of mem?)");
 			return NGX_CONF_ERROR;
 		}
 	}
 
 	timer = ngx_array_push(lcf->timers);
 	if (!timer) {
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate new timer (out of mem?)");
 		return NGX_CONF_ERROR;
 	}
 
 	timer->tags = ngx_array_create(cf->pool, 4, sizeof(ngx_pinba_tag_t));
 	if (!timer->tags) {
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate timer tags array (out of mem?)");
 		return NGX_CONF_ERROR;
 	}
 
-	/* we'll use it later */
 	timer->tag_cnt = 0;
 
 	value = cf->args->elts;
@@ -447,12 +459,14 @@ static char *ngx_http_pinba_timer_block(ngx_conf_t *cf, ngx_command_t *cmd, void
 
 		timer->value_index = ngx_http_get_variable_index(cf, &timer_value);
 		if (timer->value_index == NGX_ERROR) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer value uses uninitialized variable");
 			return NGX_CONF_ERROR;
 		}
 	} else {
 		/* value is a number */
 		timer->value = strtod(timer_value.data, NULL);
 		if (timer->value <= 0) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer value must be greater than zero");
 			return NGX_CONF_ERROR;
 		}
 		timer->value_index = -1;
@@ -467,18 +481,22 @@ static char *ngx_http_pinba_timer_block(ngx_conf_t *cf, ngx_command_t *cmd, void
 
 			timer->hit_count_index = ngx_http_get_variable_index(cf, &timer_hit_count);
 			if (timer->hit_count_index == NGX_ERROR) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer hit count uses uninitialized variable");
 				return NGX_CONF_ERROR;
 			}
 		} else {
 			/* hit_count is a number */
 			timer->hit_count = ngx_atoi(timer_hit_count.data, timer_hit_count.len);
 			if (timer->hit_count <= 0) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer hit count must be greater than zero");
 				return NGX_CONF_ERROR;
 			}
 			timer->hit_count_index = -1;
 		}
+	} else {
+		timer->hit_count_index = -1;
+		timer->hit_count = 1;
 	}
-
 
 	save = *cf;
 	ctx.timer = timer;
@@ -490,6 +508,11 @@ static char *ngx_http_pinba_timer_block(ngx_conf_t *cf, ngx_command_t *cmd, void
 	rv = ngx_conf_parse(cf, NULL);
 
 	*cf = save;
+
+	if (!timer->tags->nelts) {
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer has to have at least one timer tag");
+		return NGX_CONF_ERROR;
+	}
 
 	return rv;
 }
@@ -505,12 +528,12 @@ static char *ngx_http_pinba_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void
 
 	size = ngx_parse_size(&value[1]);
 	if (size == (size_t) NGX_ERROR) {
-		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid buffer size \"%V\" (only values from 0 to 65507 are accepted)", &value[1]);
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] invalid buffer size \"%V\" (only values from 0 to 65507 are accepted)", &value[1]);
 		return NGX_CONF_ERROR;
 	}
 
 	if (size > 65507) {
-		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "buffer size value \"%V\" is too big (only values from 0 to 65507 are accepted)", &value[1]);
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] buffer size value \"%V\" is too big (only values from 0 to 65507 are accepted)", &value[1]);
 		return NGX_CONF_ERROR;
 	}
 
@@ -536,13 +559,13 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 
 	if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
 		if (u.err) {
-			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "%s in pinba server \"%V\"", u.err, &u.url);
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] %s in pinba server \"%V\"", u.err, &u.url);
 		}
 		return NGX_CONF_ERROR;
 	}
 
 	if (u.no_port) {
-		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "no port in pinba server \"%V\"", &u.url);
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] no port in pinba server \"%V\"", &u.url);
 		return NGX_CONF_ERROR;
 	}
 
@@ -567,7 +590,7 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 	ai_list = NULL;
 	status = getaddrinfo((char *)lcf->server.host.data, (char *)lcf->server.port_text.data, &ai_hints, &ai_list);
 	if (status != 0) {
-		ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "pinba module: getaddrinfo(\"%V\") failed: %s", &lcf->server.url, gai_strerror(status));
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] getaddrinfo(\"%V\") failed: %s", &lcf->server.url, gai_strerror(status));
 		return NGX_CONF_ERROR;
 	}
 
@@ -584,7 +607,7 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 
 	freeaddrinfo(ai_list);
 	if (fd < 0) {
-		ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "pinba module: socket() failed: %s", strerror(errno));
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] socket() failed: %s", strerror(errno));
 		return NGX_CONF_ERROR;
 	}
 	return NGX_CONF_OK;
