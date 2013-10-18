@@ -65,3 +65,32 @@ The default value is detected this way:
 		/* schema = "http" */
 	}
 
+
+Request tags
+------------
+You can use request tags for tagging requests in the following way:
+
+	pinba_tag country US;
+	pinba_tag ua firefox;
+
+Each request may feature an arbitrary number of tags, which could be using to create filtered reports in Pinba (say, a report showing User-Agent distribution only for US, as in the example).
+
+Timers
+------
+Timers provide a way to measure how much time it took to execute a certain part of the code.
+nginx, of course, doesn't have access to your code and cannoe measure it automatically, but you can set the timer's value manually.
+To do this, use the following syntax:
+
+	pinba_timer 1.25 3 {
+		server $hostname;
+		group db;
+	}
+
+This will create new timer with a value = 1.25 sec, hit count = 3, and 3 tags: server, group with the appropriate values.
+Variables are allowed for all parameters:
+
+	pinba_timer $timer_value {
+		$tag $value;
+	}
+
+Hit count is optional and set to 1 by default.
