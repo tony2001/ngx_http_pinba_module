@@ -337,7 +337,7 @@ static int ngx_pinba_prepare_timer(ngx_http_request_t *r, ngx_pinba_timer_t *tim
 			return -1;
 		}
 
-		timer->value = strtod(v->data, NULL);
+		timer->value = strtod((const char *)v->data, NULL);
 		if (timer->value < 0) {
 			return -1;
 		}
@@ -391,7 +391,6 @@ static char *ngx_http_pinba_tag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) 
 
 static char *ngx_http_pinba_timer_handler(ngx_conf_t *cf, ngx_command_t *dummy, void *conf) /* {{{ */
 {
-	ngx_http_pinba_loc_conf_t *lcf = conf;
 	ngx_str_t         *value, tag_name, tag_value;
 	ngx_pinba_timer_t *timer;
 	ngx_pinba_tag_t   *tag;
@@ -464,7 +463,7 @@ static char *ngx_http_pinba_timer_block(ngx_conf_t *cf, ngx_command_t *cmd, void
 		}
 	} else {
 		/* value is a number */
-		timer->value = strtod(timer_value.data, NULL);
+		timer->value = strtod((const char *)timer_value.data, NULL);
 		if (timer->value <= 0) {
 			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer value must be greater than zero");
 			return NGX_CONF_ERROR;
@@ -808,7 +807,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 
 		/* timers*/
 		if (lcf->timers != NULL) {
-			ngx_uint_t i, j, n;
+			ngx_uint_t i, j;
 			ngx_pinba_timer_t *timers;
 			unsigned int timer_cnt, tag_cnt;
 
