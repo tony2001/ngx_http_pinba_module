@@ -202,7 +202,7 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 		if (dash) {
 			/* a range of values */
 			u_char *data_copy, *dash_copy;
-			int code1_len, code2_len, n;
+			int code1_len, code2_len, n, j;
 			ngx_int_t code1, code2;
 
 			code1_len = (dash - (char *)value[i].data);
@@ -221,6 +221,13 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 			if (code1 < 100 || code1 > 599) {
 				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] invalid status code value \"%V\", values must not be less than 100 or greater than 599", &value[i]);
 				return NGX_CONF_ERROR;
+			}
+
+			for (j = code2_len; j > 0; j--) {
+				if (dash_copy[j + 1] == ',' || dash_copy[j + 1] == ' ') {
+					dash_copy[j + 1] = '\0';
+					code2_len--;
+				}
 			}
 
 			code2 = ngx_atoi(dash_copy + 1, code2_len - 1);
