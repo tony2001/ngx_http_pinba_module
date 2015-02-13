@@ -223,9 +223,9 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 				return NGX_CONF_ERROR;
 			}
 
-			for (j = code2_len; j > 0; j--) {
-				if (dash_copy[j + 1] == ',' || dash_copy[j + 1] == ' ') {
-					dash_copy[j + 1] = '\0';
+			for (j = code2_len - 1; j > 0; j--) {
+				if (dash_copy[j] == ',' || dash_copy[j] == ' ') {
+					dash_copy[j] = '\0';
 					code2_len--;
 				}
 			}
