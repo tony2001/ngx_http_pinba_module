@@ -23,10 +23,10 @@ ngx_int_t hostname_key;
 typedef struct {
 	char name[PINBA_WORD_SIZE];
 	int name_len;
-	ngx_int_t name_index;
+	ngx_http_complex_value_t *name_cv;
 	char value[PINBA_WORD_SIZE];
 	int value_len;
-	ngx_int_t value_index;
+	ngx_http_complex_value_t *value_cv;
 	UT_hash_handle hh;
 } ngx_pinba_tag_t;
 
@@ -40,7 +40,6 @@ typedef struct {
 	ngx_flag_t   enable;
 	ngx_array_t *ignore_codes;
 	ngx_url_t    server;
-	char        *buffer;
 	size_t       buffer_size;
 	size_t       buffer_used_len;
 	struct {
@@ -60,8 +59,8 @@ typedef struct {
 	unsigned int  hit_count;
 	ngx_array_t  *tags;
 	unsigned int  tag_cnt;
-	ngx_int_t     value_index;
-	ngx_int_t     hit_count_index;
+	ngx_http_complex_value_t *value_cv;
+	ngx_http_complex_value_t *hit_count_cv;
 } ngx_pinba_timer_t;
 
 typedef struct {
@@ -92,6 +91,16 @@ typedef struct {
 		memcpy((buf), (data), tmp_len);					\
 		(buf)[tmp_len] = '\0';							\
 		(result_len) = tmp_len;							\
+	} while(0);
+
+#define memcpy_static_nl(buf, data, data_len)			\
+	do {												\
+		size_t tmp_len = (data_len);					\
+		if (tmp_len >= sizeof(buf)) {					\
+			tmp_len = sizeof(buf) - 1;					\
+		}												\
+		memcpy((buf), (data), tmp_len);					\
+		(buf)[tmp_len] = '\0';							\
 	} while(0);
 
 static ngx_command_t  ngx_http_pinba_commands[] = { /* {{{ */
@@ -275,93 +284,131 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 
 static char *ngx_pinba_parse_tag_str(ngx_conf_t *cf, ngx_pinba_tag_t *tag, ngx_str_t *name, ngx_str_t *value) /* {{{ */
 {
+	ngx_http_complex_value_t cv;
+	ngx_http_compile_complex_value_t ccv;
+
 	tag->name[0] = '\0';
 	tag->value[0] = '\0';
 
-	if (name->data[0] == '$') {
-		/* tag name is a variable */
-		name->len--;
-		name->data++;
-		tag->name_index = ngx_http_get_variable_index(cf, name);
-		if (tag->name_index == NGX_ERROR) {
-			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] using uninitialized variable for tag name");
-			return NGX_CONF_ERROR;
-		}
-	} else {
-		memcpy_static(tag->name, name->data, name->len, tag->name_len);
-		tag->name_index = -1;
+	ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+	ccv.cf = cf;
+	ccv.value = name;
+	ccv.complex_value = &cv;
+
+	if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+		return NGX_CONF_ERROR;
 	}
 
-	if (value->data[0] == '$') {
-		/* tag value is a variable */
-		value->len--;
-		value->data++;
-		tag->value_index = ngx_http_get_variable_index(cf, value);
-		if (tag->value_index == NGX_ERROR) {
-			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] using uninitialized variable for tag value");
+	if (cv.lengths == NULL) {
+		memcpy_static(tag->name, name->data, name->len, tag->name_len);
+		tag->name_cv = NULL;
+	} else {
+		tag->name_cv = ngx_palloc(cf->pool, sizeof(ngx_http_complex_value_t));
+		if (tag->name_cv == NULL) {
 			return NGX_CONF_ERROR;
 		}
-	} else {
-		memcpy_static(tag->value, value->data, value->len, tag->value_len);
-		tag->value_index = -1;
+
+		*tag->name_cv = cv;
 	}
+
+	ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+	ccv.cf = cf;
+	ccv.value = value;
+	ccv.complex_value = &cv;
+
+	if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+		return NGX_CONF_ERROR;
+	}
+
+	if (cv.lengths == NULL) {
+		memcpy_static(tag->value, value->data, value->len, tag->value_len);
+		tag->value_cv = NULL;
+	} else {
+		tag->value_cv = ngx_palloc(cf->pool, sizeof(ngx_http_complex_value_t));
+		if (tag->value_cv == NULL) {
+			return NGX_CONF_ERROR;
+		}
+
+		*tag->value_cv = cv;
+	}
+
 	return NGX_CONF_OK;
 }
 /* }}} */
 
-static int ngx_pinba_prepare_tag(ngx_http_request_t *r, ngx_pinba_tag_t *tag) /* {{{ */
+static ngx_pinba_tag_t *ngx_pinba_prepare_tag(ngx_http_request_t *r, ngx_pinba_tag_t *tag, ngx_array_t *prepared_tags) /* {{{ */
 {
-	ngx_http_variable_value_t *v;
+	ngx_str_t v;
+	ngx_pinba_tag_t *prepared_tag, tmp_tag = {0};
 
-	if (tag->name_index != -1) {
-		v = ngx_http_get_flushed_variable(r, tag->name_index);
-		if (!v || v->not_found) {
-			/* ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0, "tag name variable is not set"); */
-			return -1;
+	if (tag->name_cv) {
+		if (ngx_http_complex_value(r, tag->name_cv, &v) != NGX_OK) {
+			return NULL;
 		}
-		memcpy_static(tag->name, v->data, v->len, tag->name_len);
+		memcpy_static(tmp_tag.name, v.data, v.len, tmp_tag.name_len);
+	} else {
+		memcpy(tmp_tag.name, tag->name, sizeof(tag->name));
+		tmp_tag.name_len = tag->name_len;
 	}
 
-	if (tag->value_index != -1) {
-		v = ngx_http_get_flushed_variable(r, tag->value_index);
-		if (!v || v->not_found) {
-			/* ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0, "tag value variable is not set"); */
-			return -1;
+	if (tag->value_cv) {
+		if (ngx_http_complex_value(r, tag->value_cv, &v) != NGX_OK) {
+			return NULL;
 		}
-		memcpy_static(tag->value, v->data, v->len, tag->value_len);
+		memcpy_static(tmp_tag.value, v.data, v.len, tmp_tag.value_len);
+	} else {
+		memcpy(tmp_tag.value, tag->value, sizeof(tag->value));
+		tmp_tag.value_len = tag->value_len;
 	}
-	return 0;
+
+	prepared_tag = ngx_array_push(prepared_tags);
+	if (!prepared_tags) {
+		return NULL;
+	}
+	*prepared_tag = tmp_tag;
+	return prepared_tag;
 }
 /* }}} */
 
-static int ngx_pinba_prepare_timer(ngx_http_request_t *r, ngx_pinba_timer_t *timer) /* {{{ */
+static ngx_pinba_timer_t *ngx_pinba_prepare_timer(ngx_http_request_t *r, ngx_pinba_timer_t *timer, ngx_array_t *prepared_timers) /* {{{ */
 {
-	ngx_http_variable_value_t *v;
+	ngx_str_t v;
+	ngx_pinba_timer_t *prepared_timer, tmp_timer = {0};
 
-	if (timer->value_index != -1) {
-		v = ngx_http_get_flushed_variable(r, timer->value_index);
-		if (!v || v->not_found) {
-			return -1;
+	if (timer->value_cv) {
+		char tmp_buf[32];
+
+		if (ngx_http_complex_value(r, timer->value_cv, &v) != NGX_OK) {
+			return NULL;
 		}
 
-		timer->value = strtod((const char *)v->data, NULL);
-		if (timer->value < 0) {
-			return -1;
+		memcpy_static_nl(tmp_buf, v.data, v.len);
+
+		tmp_timer.value = strtod((const char *)tmp_buf, NULL);
+		if (tmp_timer.value <= 0) {
+			ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0, "timer value must be greater than zero");
+			return NULL;
+		}
+	}
+
+	if (timer->hit_count_cv) {
+		if (ngx_http_complex_value(r, timer->hit_count_cv, &v) != NGX_OK) {
+			return NULL;
+		}
+
+		tmp_timer.hit_count = ngx_atoi(v.data, v.len);
+		if (tmp_timer.hit_count <= 0) {
+			ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0, "timer hit count must be greater than zero");
+			return NULL;
 		}
 	}
 
-	if (timer->hit_count_index != -1) {
-		v = ngx_http_get_flushed_variable(r, timer->hit_count_index);
-		if (!v || v->not_found) {
-			return -1;
-		}
-
-		timer->hit_count = ngx_atoi(v->data, v->len);
-		if (timer->hit_count <= 0) {
-			return -1;
-		}
+	prepared_timer = ngx_array_push(prepared_timers);
+	if (!prepared_timer) {
+		return NULL;
 	}
-	return 0;
+	*prepared_timer = tmp_timer;
+	return prepared_timer;
 }
 /* }}} */
 
@@ -390,6 +437,7 @@ static char *ngx_http_pinba_tag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) 
 	}
 
 	if (ngx_pinba_parse_tag_str(cf, tag, &tag_name, &tag_value) != NGX_CONF_OK) {
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to parse pinba_tag value");
 		return NGX_CONF_ERROR;
 	}
 	return NGX_CONF_OK;
@@ -429,9 +477,11 @@ static char *ngx_http_pinba_timer_block(ngx_conf_t *cf, ngx_command_t *cmd, void
 	ngx_http_pinba_loc_conf_t *lcf = conf;
 	char *rv;
 	ngx_conf_t  save;
-	ngx_str_t   *value, timer_value, timer_hit_count;
+	ngx_str_t   *value;
 	ngx_pinba_timer_t *timer;
 	ngx_pinba_timer_ctx_t ctx;
+	ngx_http_complex_value_t cv;
+	ngx_http_compile_complex_value_t ccv;
 
 	if (lcf->timers == NULL) {
 		lcf->timers = ngx_array_create(cf->pool, 4, sizeof(ngx_pinba_timer_t));
@@ -456,51 +506,62 @@ static char *ngx_http_pinba_timer_block(ngx_conf_t *cf, ngx_command_t *cmd, void
 	timer->tag_cnt = 0;
 
 	value = cf->args->elts;
-	timer_value = value[1];
 
-	if (timer_value.data[0] == '$') {
-		/* value is a variable, fetch its index */
-		timer_value.len--;
-		timer_value.data++;
+	ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+	ccv.cf = cf;
+	ccv.value = &value[1];
+	ccv.complex_value = &cv;
 
-		timer->value_index = ngx_http_get_variable_index(cf, &timer_value);
-		if (timer->value_index == NGX_ERROR) {
-			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer value uses uninitialized variable");
-			return NGX_CONF_ERROR;
-		}
-	} else {
-		/* value is a number */
-		timer->value = strtod((const char *)timer_value.data, NULL);
+	if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+		return NGX_CONF_ERROR;
+	}
+
+	if (cv.lengths == NULL) {
+		char tmp_buf[32];
+
+		memcpy_static_nl(tmp_buf, value[1].data, value[1].len);
+
+		timer->value = strtod((const char *)tmp_buf, NULL);
 		if (timer->value <= 0) {
 			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer value must be greater than zero");
 			return NGX_CONF_ERROR;
 		}
-		timer->value_index = -1;
+	} else {
+		timer->value_cv = ngx_palloc(cf->pool, sizeof(ngx_http_complex_value_t));
+		if (timer->value_cv == NULL) {
+			return NGX_CONF_ERROR;
+		}
+
+		*timer->value_cv = cv;
 	}
 
 	if (cf->args->nelts > 2) {
-		timer_hit_count = value[2];
+		ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
 
-		if (timer_hit_count.data[0] == '$') {
-			timer_hit_count.len--;
-			timer_hit_count.data++;
+		ccv.cf = cf;
+		ccv.value = &value[2];
+		ccv.complex_value = &cv;
 
-			timer->hit_count_index = ngx_http_get_variable_index(cf, &timer_hit_count);
-			if (timer->hit_count_index == NGX_ERROR) {
-				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer hit count uses uninitialized variable");
-				return NGX_CONF_ERROR;
-			}
-		} else {
-			/* hit_count is a number */
-			timer->hit_count = ngx_atoi(timer_hit_count.data, timer_hit_count.len);
+		if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+			return NGX_CONF_ERROR;
+		}
+
+		if (cv.lengths == NULL) {
+			timer->hit_count = ngx_atoi(value[2].data, value[2].len);
 			if (timer->hit_count <= 0) {
 				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] timer hit count must be greater than zero");
 				return NGX_CONF_ERROR;
 			}
-			timer->hit_count_index = -1;
+		} else {
+			timer->hit_count_cv = ngx_palloc(cf->pool, sizeof(ngx_http_complex_value_t));
+			if (timer->hit_count_cv == NULL) {
+				return NGX_CONF_ERROR;
+			}
+
+			*timer->hit_count_cv = cv;
 		}
 	} else {
-		timer->hit_count_index = -1;
+		timer->hit_count_cv = NULL;
 		timer->hit_count = 1;
 	}
 
@@ -815,38 +876,54 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		/* timers*/
 		if (lcf->timers != NULL) {
 			ngx_uint_t i, j;
+			ngx_array_t *prepared_timers;
 			ngx_pinba_timer_t *timers;
 			unsigned int timer_cnt, tag_cnt;
+
+			prepared_timers = ngx_array_create(r->pool, lcf->timers->nelts, sizeof(ngx_pinba_timer_t));
+			if (prepared_timers == NULL) {
+				return NGX_ERROR;
+			}
 
 			timers = lcf->timers->elts;
 			timer_cnt = tag_cnt = 0;
 			for (i = 0; i < lcf->timers->nelts; i++) {
+				ngx_array_t *prepared_tags;
 				ngx_pinba_tag_t *tags;
-				ngx_pinba_timer_t *timer = &timers[i];
+				ngx_pinba_timer_t *prepared_timer, *timer = &timers[i];
 
-				if (ngx_pinba_prepare_timer(r, timer) < 0) {
+				prepared_tags = ngx_array_create(r->pool, timer->tags->nelts, sizeof(ngx_pinba_tag_t));
+				if (prepared_tags == NULL) {
+					return NGX_ERROR;
+				}
+
+				prepared_timer = ngx_pinba_prepare_timer(r, timer, prepared_timers);
+				if (!prepared_timer) {
 					continue;
 				}
+
+				prepared_timer->tags = prepared_tags;
 
 				tags = timer->tags->elts;
 				timer->tag_cnt = 0;
 
 				for (j = 0; j < timer->tags->nelts; j++) {
-					ngx_pinba_tag_t *tag = &tags[j];
+					ngx_pinba_tag_t *prepared_tag, *tag = &tags[j];
 
-					if (ngx_pinba_prepare_tag(r, tag) < 0) {
+					prepared_tag = ngx_pinba_prepare_tag(r, tag, prepared_tags);
+					if (!prepared_tag) {
 						continue;
 					}
-					ngx_pinba_add_word(&words, tag->name, tag->name_len, &word_id);
-					ngx_pinba_add_word(&words, tag->value, tag->value_len, &word_id);
-					timer->tag_cnt++;
+					ngx_pinba_add_word(&words, prepared_tag->name, prepared_tag->name_len, &word_id);
+					ngx_pinba_add_word(&words, prepared_tag->value, prepared_tag->value_len, &word_id);
+					prepared_timer->tag_cnt++;
 				}
 
-				if (!timer->tag_cnt) {
+				if (!prepared_timer->tag_cnt) {
 					continue;
 				}
 
-				tag_cnt += timer->tag_cnt;
+				tag_cnt += prepared_timer->tag_cnt;
 				timer_cnt++;
 			}
 
@@ -860,8 +937,8 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 			if (request->dictionary && request->timer_hit_count && request->timer_value && request->timer_tag_count &&
 				request->timer_tag_name && request->timer_tag_value) {
 
-				timers = lcf->timers->elts;
-				for (i = 0; i < lcf->timers->nelts; i++) {
+				timers = prepared_timers->elts;
+				for (i = 0; i < prepared_timers->nelts; i++) {
 					unsigned int this_tag_cnt;
 					ngx_pinba_tag_t *tags;
 					ngx_pinba_timer_t *timer = &timers[i];
@@ -908,19 +985,26 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		/* request tags */
 		if (lcf->tags != NULL) {
 			ngx_uint_t i, n;
+			ngx_array_t *prepared_tags;
 			ngx_pinba_tag_t *tags;
 
 			tags = lcf->tags->elts;
 
+			prepared_tags = ngx_array_create(r->pool, lcf->tags->nelts, sizeof(ngx_pinba_tag_t));
+			if (!prepared_tags) {
+				return NGX_ERROR;
+			}
+
 			/* create a dictionary first (a unique string hash in fact) */
 			for (i = 0; i < lcf->tags->nelts; i++) {
-				ngx_pinba_tag_t *tag = &tags[i];
+				ngx_pinba_tag_t *prepared_tag, *tag = &tags[i];
 
-				if (ngx_pinba_prepare_tag(r, tag) < 0) {
+				prepared_tag = ngx_pinba_prepare_tag(r, tag, prepared_tags);
+				if (!prepared_tag) {
 					continue;
 				}
-				ngx_pinba_add_word(&words, tag->name, tag->name_len, &word_id);
-				ngx_pinba_add_word(&words, tag->value, tag->value_len, &word_id);
+				ngx_pinba_add_word(&words, prepared_tag->name, prepared_tag->name_len, &word_id);
+				ngx_pinba_add_word(&words, prepared_tag->value, prepared_tag->value_len, &word_id);
 			}
 
 			n = HASH_COUNT(words);
@@ -931,8 +1015,10 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 
 			if (request->tag_name && request->tag_value && request->dictionary) {
 				n = 0;
+				tags = prepared_tags->elts;
+
 				/* then iterate all the strings again and use their IDs instead of values */
-				for (i = 0; i < lcf->tags->nelts; i++) {
+				for (i = 0; i < prepared_tags->nelts; i++) {
 					ngx_pinba_tag_t *tag = &tags[i];
 
 					HASH_FIND_STR(words, tag->name, word);
@@ -1029,7 +1115,6 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 	if (conf->buffer_size == NGX_CONF_UNSET_SIZE) {
 		conf->buffer_size = prev->buffer_size;
 		conf->buffer_used_len = 0;
-		conf->buffer = NULL;
 	}
 
 	if (conf->hostname[0] == '\0' && prev->hostname[0] != '\0') {
