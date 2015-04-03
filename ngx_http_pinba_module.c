@@ -339,7 +339,7 @@ static char *ngx_pinba_parse_tag_str(ngx_conf_t *cf, ngx_pinba_tag_t *tag, ngx_s
 static ngx_pinba_tag_t *ngx_pinba_prepare_tag(ngx_http_request_t *r, ngx_pinba_tag_t *tag, ngx_array_t *prepared_tags) /* {{{ */
 {
 	ngx_str_t v;
-	ngx_pinba_tag_t *prepared_tag, tmp_tag = {0};
+	ngx_pinba_tag_t *prepared_tag, tmp_tag;
 
 	if (tag->name_cv) {
 		if (ngx_http_complex_value(r, tag->name_cv, &v) != NGX_OK) {
