@@ -63,6 +63,8 @@ typedef struct {
 	ngx_http_complex_value_t *hit_count_cv;
 } ngx_pinba_timer_t;
 
+#define TIMER_INITIALIZER { 0.0, 0, NULL, 0, NULL, NULL}
+
 typedef struct {
 	ngx_pinba_timer_t *timer;
 	ngx_conf_t        *cf;
@@ -373,7 +375,7 @@ static ngx_pinba_tag_t *ngx_pinba_prepare_tag(ngx_http_request_t *r, ngx_pinba_t
 static ngx_pinba_timer_t *ngx_pinba_prepare_timer(ngx_http_request_t *r, ngx_pinba_timer_t *timer, ngx_array_t *prepared_timers) /* {{{ */
 {
 	ngx_str_t v;
-	ngx_pinba_timer_t *prepared_timer, tmp_timer = {0};
+	ngx_pinba_timer_t *prepared_timer, tmp_timer = TIMER_INITIALIZER;
 
 	if (timer->value_cv) {
 		char tmp_buf[32];
@@ -496,6 +498,8 @@ static char *ngx_http_pinba_timer_block(ngx_conf_t *cf, ngx_command_t *cmd, void
 		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate new timer (out of mem?)");
 		return NGX_CONF_ERROR;
 	}
+
+	memset(timer, 0, sizeof(ngx_pinba_timer_t));
 
 	timer->tags = ngx_array_create(cf->pool, 4, sizeof(ngx_pinba_tag_t));
 	if (!timer->tags) {
