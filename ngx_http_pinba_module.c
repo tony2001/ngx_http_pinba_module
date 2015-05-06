@@ -8,6 +8,9 @@
 #include <ngx_http.h>
 #include "uthash.h"
 
+#include <sys/time.h>
+#include <sys/resource.h>
+
 #include "pinba.pb-c.h"
 
 #define PINBA_STR_BUFFER_SIZE 257
@@ -67,6 +70,10 @@ typedef struct {
 	ngx_http_complex_value_t *hit_count_cv;
 } ngx_pinba_timer_t;
 
+typedef struct {
+	struct rusage start;
+} ngx_pinba_request_ctx_t;
+
 #define TIMER_INITIALIZER { 0.0, 0, NULL, 0, NULL, NULL}
 
 typedef struct {
@@ -87,6 +94,20 @@ typedef struct {
 	ProtobufCBuffer base;
 	ngx_str_t str;
 } ngx_pinba_buf_t;
+
+#ifndef timersub
+# define timersub(a, b, result)                                     \
+	do {                                                            \
+		(result)->tv_sec = (a)->tv_sec - (b)->tv_sec;               \
+		(result)->tv_usec = (a)->tv_usec - (b)->tv_usec;            \
+		if ((result)->tv_usec < 0) {                                \
+			--(result)->tv_sec;                                     \
+			(result)->tv_usec += 1000000;                           \
+		}                                                           \
+	} while (0)
+#endif
+
+#define timeval_to_float(t) (float)(t).tv_sec + (float)(t).tv_usec / 1000000.0
 
 #define memcpy_static(buf, data, data_len, result_len)	\
 	do {												\
@@ -774,7 +795,7 @@ static inline int ngx_pinba_add_word(ngx_pinba_word_t **words, char *index_str, 
 }
 /* }}} */
 
-ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
+static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 {
 	time_t now;
 	unsigned int word_id = 0;
@@ -784,6 +805,7 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 	ngx_http_variable_value_t *request_schema;
 	ngx_http_variable_value_t *hostname_var;
 	ngx_pinba_word_t *words = NULL, *word, *word_tmp;
+	ngx_pinba_request_ctx_t *ctx;
 
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http pinba handler");
 
@@ -1099,6 +1121,19 @@ ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		request->ru_utime = 0;
 		request->ru_stime = 0;
 
+		ctx = ngx_http_get_module_ctx(r, ngx_http_pinba_module);
+		if (ctx) {
+			struct rusage end;
+			struct timeval ru_utime, ru_stime;
+
+			if (getrusage(RUSAGE_SELF, &end) == 0) {
+				timersub(&end.ru_utime, &ctx->start.ru_utime, &ru_utime);
+				timersub(&end.ru_stime, &ctx->start.ru_stime, &ru_stime);
+				request->ru_utime = timeval_to_float(ru_utime);
+				request->ru_stime = timeval_to_float(ru_stime);
+			}
+		}
+
 		packed_size = pinba__request__get_packed_size(request);
 		if (ngx_http_pinba_push_into_buffer(lcf, r, request, packed_size) < 0) {
 			ngx_http_pinba_send_data(lcf, r, request, packed_size);
@@ -1173,12 +1208,42 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 }
 /* }}} */
 
+static ngx_int_t ngx_http_pinba_start_handler(ngx_http_request_t *r) /* {{{ */
+{
+	ngx_pinba_request_ctx_t *ctx;
+
+	ctx = ngx_http_get_module_ctx(r, ngx_http_pinba_module);
+	if (ctx) {
+		return NGX_OK;
+	}
+
+	ctx = ngx_pcalloc(r->pool, sizeof(ngx_pinba_request_ctx_t));
+	if (ctx == NULL) {
+		return NGX_ERROR;
+	}
+	ngx_http_set_ctx(r, ctx, ngx_http_pinba_module);
+
+	if (getrusage(RUSAGE_SELF, &ctx->start) < 0) {
+		ngx_http_set_ctx(r, NULL, ngx_http_pinba_module);
+	}
+
+	return NGX_OK;
+}
+/* }}} */
+
 static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf) /* {{{ */
 {
 	ngx_http_handler_pt *h;
 	ngx_http_core_main_conf_t  *cmcf;
 
 	cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+
+	h = ngx_array_push(&cmcf->phases[NGX_HTTP_POST_READ_PHASE].handlers);
+	if (h == NULL) {
+		return NGX_ERROR;
+	}
+
+	*h = ngx_http_pinba_start_handler;
 
 	h = ngx_array_push(&cmcf->phases[NGX_HTTP_LOG_PHASE].handlers);
 	if (h == NULL) {
