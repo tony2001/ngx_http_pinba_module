@@ -1166,6 +1166,19 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 }
 /* }}} */
 
+static void _ngx_array_copy(ngx_pool_t *pool, ngx_array_t *src, ngx_array_t **dst)
+{
+	void *el;
+	ngx_uint_t i;
+
+	*dst = ngx_array_create(pool, src->nelts, src->size);
+	if (!*dst) {
+		return;
+	}
+	memcpy((*dst)->elts, src->elts, src->nelts * src->size);
+	(*dst)->nelts = src->nelts;
+}
+
 static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) /* {{{ */
 {
 	ngx_http_pinba_loc_conf_t *prev = parent;
@@ -1173,16 +1186,16 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 
 	ngx_conf_merge_value(conf->enable, prev->enable, 0);
 
-	if (conf->ignore_codes == NULL) {
-		conf->ignore_codes = prev->ignore_codes;
+	if (prev->ignore_codes) {
+		_ngx_array_copy(cf->pool, prev->ignore_codes, &conf->ignore_codes);
 	}
 
-	if (conf->tags == NULL) {
-		conf->tags = prev->tags;
+	if (prev->tags) {
+		_ngx_array_copy(cf->pool, prev->tags, &conf->tags);
 	}
 
-	if (conf->timers == NULL) {
-		conf->timers = prev->timers;
+	if (prev->timers) {
+		_ngx_array_copy(cf->pool, prev->timers, &conf->timers);
 	}
 
 	if (conf->server.host.data == NULL && conf->server.port_text.data == NULL) {
