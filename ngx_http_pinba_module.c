@@ -1166,7 +1166,7 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 }
 /* }}} */
 
-static void _ngx_array_copy(ngx_pool_t *pool, ngx_array_t *src, ngx_array_t **dst)
+static void _ngx_array_copy(ngx_pool_t *pool, ngx_array_t *src, ngx_array_t **dst) /* {{{ */
 {
 	void *el;
 	ngx_uint_t i;
@@ -1178,6 +1178,7 @@ static void _ngx_array_copy(ngx_pool_t *pool, ngx_array_t *src, ngx_array_t **ds
 	memcpy((*dst)->elts, src->elts, src->nelts * src->size);
 	(*dst)->nelts = src->nelts;
 }
+/* }}} */
 
 static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) /* {{{ */
 {
