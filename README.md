@@ -65,6 +65,9 @@ The default value is detected this way:
 		/* schema = "http" */
 	}
 
+`$pinba_resolve_freq` - integer (seconds).
+Resolve frequency for pinba server hostname. The module will try to re-resolve the hostname each N seconds to make sure it's up to date.
+Default value: 60 seconds.
 
 Request tags
 ------------
