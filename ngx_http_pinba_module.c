@@ -15,6 +15,8 @@
 
 #define PINBA_STR_BUFFER_SIZE 257
 #define PINBA_WORD_SIZE 256
+#define PINBA_SERVER_SIZE 256
+#define PINBA_PORT_SIZE 8
 
 ngx_str_t request_uri_name = ngx_string("pinba_request_uri");
 ngx_str_t request_schema_name = ngx_string("pinba_request_schema");
@@ -47,15 +49,17 @@ typedef struct {
 } ngx_pinba_socket_t;
 
 typedef struct {
+	char key[PINBA_SERVER_SIZE + PINBA_PORT_SIZE + 1];
+	char server_name[PINBA_SERVER_SIZE];
+	char port[PINBA_PORT_SIZE];
+	ngx_pinba_socket_t sock;
+	UT_hash_handle hh;
+} ngx_pinba_hash_sock_t;
+
+typedef struct {
 	ngx_flag_t   enable;
 	ngx_array_t *ignore_codes;
 	ngx_url_t    server;
-	size_t       buffer_size;
-	size_t       buffer_used_len;
-	ngx_pinba_socket_t socket;
-	char hostname[PINBA_STR_BUFFER_SIZE];
-	Pinba__Request *request;
-	size_t          request_size;
 	ngx_array_t    *tags;
 	ngx_array_t    *timers;
 	time_t          resolve_freq; /* default 60 sec */
@@ -80,6 +84,9 @@ typedef struct {
 	ngx_pinba_timer_t *timer;
 	ngx_conf_t        *cf;
 } ngx_pinba_timer_ctx_t;
+
+ngx_pinba_hash_sock_t *g_sock_hash = NULL;
+char                   g_hostname[PINBA_STR_BUFFER_SIZE];
 
 static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
@@ -623,6 +630,7 @@ static char *ngx_http_pinba_timer_block(ngx_conf_t *cf, ngx_command_t *cmd, void
 
 static char *ngx_http_pinba_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) /* {{{ */
 {
+#if 0 /* UNUSED for now */
 	ngx_http_pinba_loc_conf_t *lcf = conf;
 	ngx_str_t *value;
 	size_t size;
@@ -641,23 +649,63 @@ static char *ngx_http_pinba_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void
 	}
 
 	lcf->buffer_size = size;
+#endif
 	return NGX_CONF_OK;
 }
 /* }}} */
 
-static int ngx_http_pinba_resolve_and_open_socket(ngx_str_t *host, ngx_str_t *port, ngx_pinba_socket_t *sock) /* {{{ */
+static int ngx_http_pinba_resolve_and_open_socket(ngx_http_request_t *r, ngx_conf_t *cf, ngx_str_t *host, ngx_str_t *port, int resolve_freq, ngx_pinba_socket_t **sock) /* {{{ */
 {
-	char tmp_host[64], tmp_port[16];
+	char tmp_key[PINBA_SERVER_SIZE + PINBA_PORT_SIZE + 1];
 	struct addrinfo *ai_list, *ai_ptr, ai_hints;
-	int status;
+	int status, tmp_key_len;
+	ngx_pinba_hash_sock_t *element;
 
-	if (sock->fd >= 0) {
-		close(sock->fd);
+	*sock = NULL;
+
+	tmp_key_len = snprintf(tmp_key, sizeof(tmp_key), "%.*s:%.*s", host->len, host->data, port->len, port->data);
+	if (tmp_key_len < 0) {
+		if (cf) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] snprintf() failed: %s", strerror(status));
+		} else {
+			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] snprintf() failed: %s", strerror(status));
+		}
+		return -1;
 	}
-	sock->fd = -1;
+
+	HASH_FIND_STR(g_sock_hash, tmp_key, element);
+	if (!element) {
+		element = calloc(1, sizeof(ngx_pinba_hash_sock_t));
+		if (!element) {
+			if (cf) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] calloc() failed: %s", strerror(status));
+			} else {
+				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] calloc() failed: %s", strerror(status));
+			}
+			return -1;
+		}
+
+		memcpy_static_nl(element->key, tmp_key, tmp_key_len);
+		memcpy_static_nl(element->server_name, host->data, host->len);
+		memcpy_static_nl(element->port, port->data, port->len);
+		HASH_ADD_STR(g_sock_hash, key, element);
+	} else {
+		*sock = &element->sock;
+
+		if (ngx_time() < (element->sock.last_resolve_time + resolve_freq)) {
+			return (element->sock.fd < 0) ? -1 : 0;
+		}
+
+		if (element->sock.fd >= 0) {
+			close(element->sock.fd);
+		}
+	}
+
+	/* (re-)resolve */
+	element->sock.fd = -1;
 
 	/* reset time rightaway to prevent repeated DNS requests in case of failure */
-	sock->last_resolve_time = ngx_time();
+	element->sock.last_resolve_time = ngx_time();
 
 	memset(&ai_hints, 0, sizeof(ai_hints));
 	ai_hints.ai_flags = 0;
@@ -670,25 +718,37 @@ static int ngx_http_pinba_resolve_and_open_socket(ngx_str_t *host, ngx_str_t *po
 	ai_hints.ai_canonname = NULL;
 	ai_hints.ai_next = NULL;
 
-	memcpy_static_nl(tmp_host, host->data, host->len);
-	memcpy_static_nl(tmp_port, port->data, port->len);
-
 	ai_list = NULL;
-	status = getaddrinfo(tmp_host, tmp_port, &ai_hints, &ai_list);
+	status = getaddrinfo(element->server_name, element->port, &ai_hints, &ai_list);
 	if (status != 0) {
-		return status;
+		if (cf) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] getaddrinfo(\"%s:%s\") failed: %s", element->server_name, element->port, gai_strerror(status));
+		} else {
+			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] getaddrinfo(\"%s:%s\") failed: %s", element->server_name, element->port, gai_strerror(status));
+		}
+		return -1;
 	}
 
 	for (ai_ptr = ai_list; ai_ptr != NULL; ai_ptr = ai_ptr->ai_next) {
-		sock->fd = socket(ai_ptr->ai_family, ai_ptr->ai_socktype, ai_ptr->ai_protocol);
-		if (sock->fd >= 0) {
-			memcpy(&sock->sockaddr, ai_ptr->ai_addr, ai_ptr->ai_addrlen);
-			sock->sockaddr_len = ai_ptr->ai_addrlen;
+		element->sock.fd = socket(ai_ptr->ai_family, ai_ptr->ai_socktype, ai_ptr->ai_protocol);
+		if (element->sock.fd >= 0) {
+			memcpy(&(element->sock.sockaddr), ai_ptr->ai_addr, ai_ptr->ai_addrlen);
+			element->sock.sockaddr_len = ai_ptr->ai_addrlen;
 			break;
 		}
 	}
-
 	freeaddrinfo(ai_list);
+
+	if (element->sock.fd < 0) {
+		if (cf) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] socket() failed: %s", strerror(status));
+		} else {
+			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] socket() failed: %s", strerror(status));
+		}
+		return -1;
+	}
+
+	*sock = &element->sock;
 	return 0;
 }
 /* }}} */
@@ -698,7 +758,8 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 	ngx_str_t *value;
 	ngx_url_t u;
 	ngx_http_pinba_loc_conf_t *lcf = conf;
-	int status;
+	int res;
+	ngx_pinba_socket_t *sock;
 
 	value = cf->args->elts;
 
@@ -719,24 +780,20 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 		return NGX_CONF_ERROR;
 	}
 
-	lcf->socket.fd = -1;
 	lcf->server = u;
 
-	status = ngx_http_pinba_resolve_and_open_socket(&lcf->server.host, &lcf->server.port_text, &lcf->socket);
-	if (status < 0) {
-		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] getaddrinfo(\"%V\") failed: %s", &lcf->server.url, gai_strerror(status));
-		return NGX_CONF_ERROR;
-	} else if (lcf->socket.fd < 0) {
-		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] socket() failed: %s", strerror(errno));
+	res = ngx_http_pinba_resolve_and_open_socket(NULL, cf, &lcf->server.host, &lcf->server.port_text, lcf->resolve_freq, &sock);
+	if (res < 0) {
 		return NGX_CONF_ERROR;
 	}
 	return NGX_CONF_OK;
 }
 /* }}} */
 
-static void ngx_http_pinba_send_data(ngx_http_pinba_loc_conf_t *lcf, ngx_http_request_t *r, Pinba__Request *request, size_t packed_size) /* {{{ */
+static void ngx_http_pinba_send_data(ngx_http_request_t *r, ngx_pinba_socket_t *sock, Pinba__Request *request, size_t packed_size) /* {{{ */
 {
 	uint8_t *buf;
+	int res;
 
 	if (packed_size == 0) {
 		packed_size = pinba__request__get_packed_size(request);
@@ -745,15 +802,19 @@ static void ngx_http_pinba_send_data(ngx_http_pinba_loc_conf_t *lcf, ngx_http_re
 	buf = ngx_pcalloc(r->pool, packed_size);
 	pinba__request__pack(request, buf);
 
-	sendto(lcf->socket.fd, buf, packed_size, 0,
-				(struct sockaddr *) &lcf->socket.sockaddr, lcf->socket.sockaddr_len);
+	res = sendto(sock->fd, buf, packed_size, 0, (struct sockaddr *) &sock->sockaddr, sock->sockaddr_len);
+	if (res < 0) {
+		ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[pinba] sendto() failed: %s", strerror(res));
+	}
+
 	ngx_pfree(r->pool, buf);
 }
 /* }}} */
 
+#if 0
 static int ngx_http_pinba_push_into_buffer(ngx_http_pinba_loc_conf_t *lcf, ngx_http_request_t *r, Pinba__Request *request, int packed_size) /* {{{ */
 {
-	if (lcf->buffer_size != NGX_CONF_UNSET_SIZE  && lcf->buffer_size > 0) {
+	if (lcf->buffer_size != NGX_CONF_UNSET_SIZE && lcf->buffer_size > 0) {
 		if (lcf->request == NULL) {
 			lcf->request = request;
 		} else if ((lcf->request_size + packed_size) > lcf->buffer_size) {
@@ -773,6 +834,7 @@ static int ngx_http_pinba_push_into_buffer(ngx_http_pinba_loc_conf_t *lcf, ngx_h
 	return -1;
 }
 /* }}} */
+#endif
 
 static inline int ngx_pinba_add_word(ngx_pinba_word_t **words, char *index_str, int index_str_len, unsigned int *word_id) /* {{{ */
 {
@@ -798,6 +860,7 @@ static inline int ngx_pinba_add_word(ngx_pinba_word_t **words, char *index_str, 
 static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 {
 	time_t now;
+	int res;
 	unsigned int word_id = 0;
 	ngx_http_pinba_loc_conf_t  *lcf;
 	ngx_uint_t status, i, *pcode;
@@ -806,6 +869,7 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 	ngx_http_variable_value_t *hostname_var;
 	ngx_pinba_word_t *words = NULL, *word, *word_tmp;
 	ngx_pinba_request_ctx_t *ctx;
+	ngx_pinba_socket_t *sock;
 
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http pinba handler");
 
@@ -835,23 +899,10 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		}
 	}
 
-	now = ngx_time();
-	if (now > (lcf->socket.last_resolve_time + lcf->resolve_freq)) {
-		int status;
 
-		status = ngx_http_pinba_resolve_and_open_socket(&lcf->server.host, &lcf->server.port_text, &lcf->socket);
-		if (status < 0) {
-			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] getaddrinfo(\"%V\") failed: %s", &lcf->server.url, gai_strerror(status));
-			return NGX_OK;
-		} else if (lcf->socket.fd < 0) {
-			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] socket() failed: %s", strerror(errno));
-			return NGX_OK;
-		}
-	}
-
-	if (lcf->socket.fd < 0) {
-		/* no socket -> no data */
-		return NGX_OK; /* doesn't matter, the return status is ignored anyway */
+	res = ngx_http_pinba_resolve_and_open_socket(r, NULL, &lcf->server.host, &lcf->server.port_text, lcf->resolve_freq, &sock);
+	if (res < 0) {
+		return NGX_OK;
 	}
 
 	/* ok, we may proceed then.. */
@@ -860,17 +911,16 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		char hostname[PINBA_STR_BUFFER_SIZE] = {0}, server_name[PINBA_STR_BUFFER_SIZE] = {0}, script_name[PINBA_STR_BUFFER_SIZE] = {0};
 		ngx_time_t *tp;
 		ngx_msec_int_t ms;
-		size_t packed_size;
 		Pinba__Request *request;
 
 		request = malloc(sizeof(Pinba__Request));
 		pinba__request__init(request);
 
-		if (lcf->hostname[0] == '\0') {
+		if (g_hostname[0] == '\0') {
 			if (gethostname(hostname, sizeof(hostname)) == 0) {
-				memcpy(lcf->hostname, hostname, PINBA_STR_BUFFER_SIZE);
+				memcpy(g_hostname, hostname, PINBA_STR_BUFFER_SIZE);
 			} else {
-				memcpy(lcf->hostname, "unknown", sizeof("unknown"));
+				memcpy(g_hostname, "unknown", sizeof("unknown"));
 			}
 		}
 
@@ -884,7 +934,7 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 				request->hostname[hostname_var->len] = '\0';
 			}
 		} else {
-			request->hostname = strdup(lcf->hostname);
+			request->hostname = strdup(g_hostname);
 		}
 
 		memcpy(server_name, r->headers_in.server.data, (r->headers_in.server.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : r->headers_in.server.len);
@@ -1134,11 +1184,8 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 			}
 		}
 
-		packed_size = pinba__request__get_packed_size(request);
-		if (ngx_http_pinba_push_into_buffer(lcf, r, request, packed_size) < 0) {
-			ngx_http_pinba_send_data(lcf, r, request, packed_size);
-			pinba__request__free_unpacked(request, NULL);
-		}
+		ngx_http_pinba_send_data(r, sock, request, 0);
+		pinba__request__free_unpacked(request, NULL);
 	}
 
 	return NGX_OK;
@@ -1158,15 +1205,13 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 	conf->ignore_codes = NULL;
 	conf->tags = NULL;
 	conf->timers = NULL;
-	conf->socket.fd = -1;
-	conf->buffer_size = NGX_CONF_UNSET_SIZE;
 	conf->resolve_freq = NGX_CONF_UNSET;
 
 	return conf;
 }
 /* }}} */
 
-static void _ngx_array_copy(ngx_pool_t *pool, ngx_array_t *src, ngx_array_t **dst)
+static void _ngx_array_copy(ngx_pool_t *pool, ngx_array_t *src, ngx_array_t **dst) /* {{{ */
 {
 	void *el;
 	ngx_uint_t i;
@@ -1178,6 +1223,7 @@ static void _ngx_array_copy(ngx_pool_t *pool, ngx_array_t *src, ngx_array_t **ds
 	memcpy((*dst)->elts, src->elts, src->nelts * src->size);
 	(*dst)->nelts = src->nelts;
 }
+/* }}} */
 
 static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) /* {{{ */
 {
@@ -1200,19 +1246,6 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 
 	if (conf->server.host.data == NULL && conf->server.port_text.data == NULL) {
 		conf->server = prev->server;
-	}
-
-	if (conf->socket.fd == -1) {
-		conf->socket = prev->socket;
-	}
-
-	if (conf->buffer_size == NGX_CONF_UNSET_SIZE) {
-		conf->buffer_size = prev->buffer_size;
-		conf->buffer_used_len = 0;
-	}
-
-	if (conf->hostname[0] == '\0' && prev->hostname[0] != '\0') {
-		memcpy(conf->hostname, prev->hostname, sizeof(prev->hostname));
 	}
 
 	ngx_conf_merge_sec_value(conf->resolve_freq, prev->resolve_freq, 60);
