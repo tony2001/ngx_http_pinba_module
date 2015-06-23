@@ -663,12 +663,12 @@ static int ngx_http_pinba_resolve_and_open_socket(ngx_http_request_t *r, ngx_con
 
 	*sock = NULL;
 
-	tmp_key_len = snprintf(tmp_key, sizeof(tmp_key), "%.*s:%.*s", host->len, host->data, port->len, port->data);
+	tmp_key_len = snprintf(tmp_key, sizeof(tmp_key), "%.*s:%.*s", (int)host->len, host->data, (int)port->len, port->data);
 	if (tmp_key_len < 0) {
 		if (cf) {
-			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] snprintf() failed: %s", strerror(status));
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] snprintf() failed");
 		} else {
-			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] snprintf() failed: %s", strerror(status));
+			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] snprintf() failed");
 		}
 		return -1;
 	}
@@ -678,9 +678,9 @@ static int ngx_http_pinba_resolve_and_open_socket(ngx_http_request_t *r, ngx_con
 		element = calloc(1, sizeof(ngx_pinba_hash_sock_t));
 		if (!element) {
 			if (cf) {
-				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] calloc() failed: %s", strerror(status));
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] calloc() failed");
 			} else {
-				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] calloc() failed: %s", strerror(status));
+				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "[pinba] calloc() failed");
 			}
 			return -1;
 		}
@@ -859,7 +859,6 @@ static inline int ngx_pinba_add_word(ngx_pinba_word_t **words, char *index_str, 
 
 static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 {
-	time_t now;
 	int res;
 	unsigned int word_id = 0;
 	ngx_http_pinba_loc_conf_t  *lcf;
@@ -1213,9 +1212,6 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 
 static void _ngx_array_copy(ngx_pool_t *pool, ngx_array_t *src, ngx_array_t **dst) /* {{{ */
 {
-	void *el;
-	ngx_uint_t i;
-
 	*dst = ngx_array_create(pool, src->nelts, src->size);
 	if (!*dst) {
 		return;
