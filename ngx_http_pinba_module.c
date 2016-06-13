@@ -57,12 +57,14 @@ typedef struct {
 } ngx_pinba_hash_sock_t;
 
 typedef struct {
-	ngx_flag_t   enable;
-	ngx_array_t *ignore_codes;
-	ngx_url_t    server;
+	ngx_flag_t     enable;
+	ngx_array_t    *ignore_codes;
+	ngx_url_t      server;
 	ngx_array_t    *tags;
 	ngx_array_t    *timers;
-	time_t          resolve_freq; /* default 60 sec */
+	time_t         resolve_freq; /* default 60 sec */
+	ngx_http_complex_value_t *server_name;
+	ngx_http_complex_value_t *script_name;
 } ngx_http_pinba_loc_conf_t;
 
 typedef struct {
@@ -186,6 +188,20 @@ static ngx_command_t  ngx_http_pinba_commands[] = { /* {{{ */
       ngx_http_pinba_timer_block,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
+      NULL },
+
+    { ngx_string("pinba_server_name"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
+      ngx_http_set_complex_value_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_pinba_loc_conf_t, server_name),
+      NULL },
+
+    { ngx_string("pinba_script_name"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
+      ngx_http_set_complex_value_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_pinba_loc_conf_t, script_name),
       NULL },
 
       ngx_null_command
@@ -936,12 +952,20 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 			request->hostname = strdup(g_hostname);
 		}
 
-		memcpy(server_name, r->headers_in.server.data, (r->headers_in.server.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : r->headers_in.server.len);
+		/* server_name */
+		ngx_str_t v;
+		if (lcf->server_name != NULL && ngx_http_complex_value(r, lcf->server_name, &v) == NGX_OK && v.len > 0) {
+			memcpy(server_name, v.data, (v.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : v.len);
+		} else {
+			memcpy(server_name, r->headers_in.server.data, (r->headers_in.server.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : r->headers_in.server.len);
+		}
 		request->server_name = strdup(server_name);
 
+		/* script_name */
 		request_uri = ngx_http_get_variable(r, &request_uri_name, request_uri_key);
-
-		if (request_uri && !request_uri->not_found && request_uri->len > 0) {
+		if (lcf->script_name != NULL && ngx_http_complex_value(r, lcf->script_name, &v) == NGX_OK && v.len > 0) {
+			memcpy(script_name, v.data, (v.len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : v.len);
+		} else if (request_uri && !request_uri->not_found && request_uri->len > 0) {
 			/* try variable first */
 			memcpy(script_name, request_uri->data, (request_uri->len > PINBA_STR_BUFFER_SIZE) ? PINBA_STR_BUFFER_SIZE : request_uri->len);
 		} else {
@@ -961,6 +985,7 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		}
 		request->script_name = strdup(script_name);
 
+		/* schema */
 		request_schema = ngx_http_get_variable(r, &request_schema_name, request_schema_key);
 
 		if (request_schema && !request_schema->not_found && request_schema->len) {
@@ -1205,6 +1230,8 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 	conf->tags = NULL;
 	conf->timers = NULL;
 	conf->resolve_freq = NGX_CONF_UNSET;
+	conf->script_name = NULL;
+	conf->server_name = NULL;
 
 	return conf;
 }
@@ -1243,6 +1270,14 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 	if (conf->server.host.data == NULL && conf->server.port_text.data == NULL) {
 		conf->server = prev->server;
 	}
+
+	if (conf->server_name == NULL) {
+		conf->server_name = prev->server_name;
+	}
+	if (conf->script_name == NULL) {
+		conf->script_name = prev->script_name;
+	}
+
 
 	ngx_conf_merge_sec_value(conf->resolve_freq, prev->resolve_freq, 60);
 
