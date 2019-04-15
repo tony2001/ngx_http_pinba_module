@@ -59,8 +59,8 @@ typedef struct {
 typedef struct {
 	ngx_flag_t   enable;
 	ngx_array_t *ignore_codes;
-	ngx_url_t    server;
-	ngx_array_t    *tags;
+    ngx_array_t    *servers;
+    ngx_array_t    *tags;
 	ngx_array_t    *timers;
 	time_t          resolve_freq; /* default 60 sec */
 } ngx_http_pinba_loc_conf_t;
@@ -175,7 +175,7 @@ static ngx_command_t  ngx_http_pinba_commands[] = { /* {{{ */
       NULL },
 
     { ngx_string("pinba_server"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_SIF_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_1MORE,
       ngx_http_pinba_server,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
@@ -757,35 +757,54 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 {
 	ngx_str_t *value;
 	ngx_url_t u;
+	ngx_url_t *up;
 	ngx_http_pinba_loc_conf_t *lcf = conf;
 	int res;
+	int i;
 	ngx_pinba_socket_t *sock;
 
-	value = cf->args->elts;
+    if (lcf->servers == NULL) {
+        lcf->servers = ngx_array_create(cf->pool, 4, sizeof(ngx_url_t));
+        if (lcf->servers == NULL) {
+            ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to create servers array (out of mem?)");
+            return NGX_CONF_ERROR;
+        }
+    }
 
-	ngx_memzero(&u, sizeof(ngx_url_t));
+    value = cf->args->elts;
 
-	u.url = value[1];
-	u.no_resolve = 1;
+	for (i = 1; i < cf->args->nelts; i++) {
 
-	if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
-		if (u.err) {
-			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] %s in pinba server \"%V\"", u.err, &u.url);
-		}
-		return NGX_CONF_ERROR;
-	}
+        ngx_memzero(&u, sizeof(ngx_url_t));
 
-	if (u.no_port) {
-		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] no port in pinba server \"%V\"", &u.url);
-		return NGX_CONF_ERROR;
-	}
+        u.url = value[i];
+        u.no_resolve = 1;
 
-	lcf->server = u;
+        if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
+            if (u.err) {
+                ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] %s in pinba server \"%V\"", u.err, &u.url);
+            }
+            return NGX_CONF_ERROR;
+        }
 
-	res = ngx_http_pinba_resolve_and_open_socket(NULL, cf, &lcf->server.host, &lcf->server.port_text, lcf->resolve_freq, &sock);
-	if (res < 0) {
-		return NGX_CONF_ERROR;
-	}
+        if (u.no_port) {
+            ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] no port in pinba server \"%V\"", &u.url);
+            return NGX_CONF_ERROR;
+        }
+
+        up = ngx_array_push(lcf->servers);
+        if (up == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        res = ngx_http_pinba_resolve_and_open_socket(NULL, cf, &u.host, &u.port_text, lcf->resolve_freq, &sock);
+        if (res < 0) {
+            return NGX_CONF_ERROR;
+        }
+
+        *up = u;
+    }
+
 	return NGX_CONF_OK;
 }
 /* }}} */
@@ -868,7 +887,7 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 	ngx_http_variable_value_t *hostname_var;
 	ngx_pinba_word_t *words = NULL, *word, *word_tmp;
 	ngx_pinba_request_ctx_t *ctx;
-	ngx_pinba_socket_t *sock;
+	ngx_array_t *socks = NULL;
 
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http pinba handler");
 
@@ -898,11 +917,28 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		}
 	}
 
+    socks = ngx_array_create(r->pool, lcf->servers->nelts, sizeof(ngx_pinba_socket_t*));
+    if (socks == NULL) {
+        return NGX_ERROR;
+    }
+    
+    for (i = 0; i < lcf->servers->nelts; i++) {
 
-	res = ngx_http_pinba_resolve_and_open_socket(r, NULL, &lcf->server.host, &lcf->server.port_text, lcf->resolve_freq, &sock);
-	if (res < 0) {
-		return NGX_OK;
+	    ngx_url_t *server = NULL;
+	    ngx_pinba_socket_t *sock;
+	    ngx_pinba_socket_t **sockp = NULL;
+
+	    server = lcf->servers->elts + lcf->servers->size * i;
+
+        res = ngx_http_pinba_resolve_and_open_socket(r, NULL, &server->host, &server->port_text, lcf->resolve_freq, &sock);
+        if (res < 0) {
+            return NGX_OK;
+        }
+
+        sockp = ngx_array_push(socks);
+        *sockp = sock;
 	}
+
 
 	/* ok, we may proceed then.. */
 
@@ -1183,7 +1219,11 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 			}
 		}
 
-		ngx_http_pinba_send_data(r, sock, request, 0);
+        for (i = 0; i < socks->nelts; i++) {
+		    ngx_pinba_socket_t **sock = socks->elts + socks->size * i;
+            ngx_http_pinba_send_data(r, *sock, request, 0);
+        }
+
 		pinba__request__free_unpacked(request, NULL);
 	}
 
@@ -1201,6 +1241,7 @@ static void *ngx_http_pinba_create_loc_conf(ngx_conf_t *cf) /* {{{ */
 	}
 
 	conf->enable = NGX_CONF_UNSET;
+	conf->servers = NULL;
 	conf->ignore_codes = NULL;
 	conf->tags = NULL;
 	conf->timers = NULL;
@@ -1240,9 +1281,9 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 		_ngx_array_copy(cf->pool, prev->timers, &conf->timers);
 	}
 
-	if (conf->server.host.data == NULL && conf->server.port_text.data == NULL) {
-		conf->server = prev->server;
-	}
+	if (prev->servers) {
+        _ngx_array_copy(cf->pool, prev->servers, &conf->servers);
+    }
 
 	ngx_conf_merge_sec_value(conf->resolve_freq, prev->resolve_freq, 60);
 
