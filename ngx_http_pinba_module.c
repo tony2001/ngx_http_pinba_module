@@ -59,8 +59,8 @@ typedef struct {
 typedef struct {
 	ngx_flag_t   enable;
 	ngx_array_t *ignore_codes;
-    ngx_array_t    *servers;
-    ngx_array_t    *tags;
+	ngx_array_t    *servers;
+	ngx_array_t    *tags;
 	ngx_array_t    *timers;
 	time_t          resolve_freq; /* default 60 sec */
 } ngx_http_pinba_loc_conf_t;
@@ -293,7 +293,7 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 
 			for (n = code1; n <= code2; n++) {
 				pcode = ngx_array_push(lcf->ignore_codes);
-				if (pcode == NULL) {
+				if (!pcode) {
 					ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate new ignore codes array item (out of mem?)");
 					return NGX_CONF_ERROR;
 				}
@@ -310,7 +310,7 @@ static char *ngx_http_pinba_ignore_codes(ngx_conf_t *cf, ngx_command_t *cmd, voi
 			}
 
 			pcode = ngx_array_push(lcf->ignore_codes);
-			if (pcode == NULL) {
+			if (!pcode) {
 				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate new ignore codes array item (out of mem?)");
 				return NGX_CONF_ERROR;
 			}
@@ -472,7 +472,7 @@ static char *ngx_http_pinba_tag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) 
 	}
 
 	tag = ngx_array_push(lcf->tags);
-	if (tag == NULL) {
+	if (!tag) {
 		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to allocate new request tags array item (out of mem?)");
 		return NGX_CONF_ERROR;
 	}
@@ -763,47 +763,47 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 	int i;
 	ngx_pinba_socket_t *sock;
 
-    if (lcf->servers == NULL) {
-        lcf->servers = ngx_array_create(cf->pool, 4, sizeof(ngx_url_t));
-        if (lcf->servers == NULL) {
-            ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to create servers array (out of mem?)");
-            return NGX_CONF_ERROR;
-        }
-    }
+	if (lcf->servers == NULL) {
+		lcf->servers = ngx_array_create(cf->pool, 4, sizeof(ngx_url_t));
+		if (lcf->servers == NULL) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] failed to create servers array (out of mem?)");
+			return NGX_CONF_ERROR;
+		}
+	}
 
-    value = cf->args->elts;
+	value = cf->args->elts;
 
 	for (i = 1; i < cf->args->nelts; i++) {
 
-        ngx_memzero(&u, sizeof(ngx_url_t));
+		ngx_memzero(&u, sizeof(ngx_url_t));
 
-        u.url = value[i];
-        u.no_resolve = 1;
+		u.url = value[i];
+		u.no_resolve = 1;
 
-        if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
-            if (u.err) {
-                ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] %s in pinba server \"%V\"", u.err, &u.url);
-            }
-            return NGX_CONF_ERROR;
-        }
+		if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
+			if (u.err) {
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] %s in pinba server \"%V\"", u.err, &u.url);
+			}
+			return NGX_CONF_ERROR;
+		}
 
-        if (u.no_port) {
-            ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] no port in pinba server \"%V\"", &u.url);
-            return NGX_CONF_ERROR;
-        }
+		if (u.no_port) {
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "[pinba] no port in pinba server \"%V\"", &u.url);
+			return NGX_CONF_ERROR;
+		}
 
-        up = ngx_array_push(lcf->servers);
-        if (up == NULL) {
-            return NGX_CONF_ERROR;
-        }
+		up = ngx_array_push(lcf->servers);
+		if (!up) {
+			return NGX_CONF_ERROR;
+		}
 
-        res = ngx_http_pinba_resolve_and_open_socket(NULL, cf, &u.host, &u.port_text, lcf->resolve_freq, &sock);
-        if (res < 0) {
-            return NGX_CONF_ERROR;
-        }
+		res = ngx_http_pinba_resolve_and_open_socket(NULL, cf, &u.host, &u.port_text, lcf->resolve_freq, &sock);
+		if (res < 0) {
+			return NGX_CONF_ERROR;
+		}
 
-        *up = u;
-    }
+		*up = u;
+	}
 
 	return NGX_CONF_OK;
 }
@@ -917,26 +917,29 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		}
 	}
 
-    socks = ngx_array_create(r->pool, lcf->servers->nelts, sizeof(ngx_pinba_socket_t*));
-    if (socks == NULL) {
-        return NGX_ERROR;
-    }
-    
-    for (i = 0; i < lcf->servers->nelts; i++) {
+	socks = ngx_array_create(r->pool, lcf->servers->nelts, sizeof(ngx_pinba_socket_t*));
+	if (socks == NULL) {
+		return NGX_ERROR;
+	}
 
-	    ngx_url_t *server = NULL;
-	    ngx_pinba_socket_t *sock;
-	    ngx_pinba_socket_t **sockp = NULL;
+	for (i = 0; i < lcf->servers->nelts; i++) {
 
-	    server = lcf->servers->elts + lcf->servers->size * i;
+		ngx_url_t *server = NULL;
+		ngx_pinba_socket_t *sock;
+		ngx_pinba_socket_t **sockp = NULL;
 
-        res = ngx_http_pinba_resolve_and_open_socket(r, NULL, &server->host, &server->port_text, lcf->resolve_freq, &sock);
-        if (res < 0) {
-            return NGX_OK;
-        }
+		server = lcf->servers->elts + lcf->servers->size * i;
 
-        sockp = ngx_array_push(socks);
-        *sockp = sock;
+		res = ngx_http_pinba_resolve_and_open_socket(r, NULL, &server->host, &server->port_text, lcf->resolve_freq, &sock);
+		if (res < 0) {
+			return NGX_OK;
+		}
+
+		sockp = ngx_array_push(socks);
+		if (!sockp) {
+			return NGX_ERROR;
+		}
+		*sockp = sock;
 	}
 
 
@@ -1219,10 +1222,10 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 			}
 		}
 
-        for (i = 0; i < socks->nelts; i++) {
-		    ngx_pinba_socket_t **sock = socks->elts + socks->size * i;
-            ngx_http_pinba_send_data(r, *sock, request, 0);
-        }
+		for (i = 0; i < socks->nelts; i++) {
+			ngx_pinba_socket_t **sock = socks->elts + socks->size * i;
+			ngx_http_pinba_send_data(r, *sock, request, 0);
+		}
 
 		pinba__request__free_unpacked(request, NULL);
 	}
@@ -1282,8 +1285,8 @@ static char *ngx_http_pinba_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 	}
 
 	if (prev->servers) {
-        _ngx_array_copy(cf->pool, prev->servers, &conf->servers);
-    }
+		_ngx_array_copy(cf->pool, prev->servers, &conf->servers);
+	}
 
 	ngx_conf_merge_sec_value(conf->resolve_freq, prev->resolve_freq, 60);
 
@@ -1322,14 +1325,14 @@ static ngx_int_t ngx_http_pinba_init(ngx_conf_t *cf) /* {{{ */
 	cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
 	h = ngx_array_push(&cmcf->phases[NGX_HTTP_POST_READ_PHASE].handlers);
-	if (h == NULL) {
+	if (!h) {
 		return NGX_ERROR;
 	}
 
 	*h = ngx_http_pinba_start_handler;
 
 	h = ngx_array_push(&cmcf->phases[NGX_HTTP_LOG_PHASE].handlers);
-	if (h == NULL) {
+	if (!h) {
 		return NGX_ERROR;
 	}
 
