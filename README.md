@@ -32,6 +32,7 @@ The module is disabled by default.
 
 `pinba_server` - the adress of Pinba server.  
 Should be a valid `host:port` or `ip_address:port` combination.
+You can add several of these separated by space. In that case the same data will be sent to all of these.
 
 `pinba_ignore_codes` - a list of HTTP status codes.  
 Can be comma separated list or comma separated ranges of codes or both.  
