@@ -760,7 +760,7 @@ static char *ngx_http_pinba_server(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 	ngx_url_t *up;
 	ngx_http_pinba_loc_conf_t *lcf = conf;
 	int res;
-	int i;
+	ngx_uint_t i;
 	ngx_pinba_socket_t *sock;
 
 	if (lcf->servers == NULL) {
@@ -928,7 +928,7 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		ngx_pinba_socket_t *sock;
 		ngx_pinba_socket_t **sockp = NULL;
 
-		server = lcf->servers->elts + lcf->servers->size * i;
+		server = (ngx_url_t *)lcf->servers->elts + lcf->servers->size * i;
 
 		res = ngx_http_pinba_resolve_and_open_socket(r, NULL, &server->host, &server->port_text, lcf->resolve_freq, &sock);
 		if (res < 0) {
@@ -1223,7 +1223,7 @@ static ngx_int_t ngx_http_pinba_handler(ngx_http_request_t *r) /* {{{ */
 		}
 
 		for (i = 0; i < socks->nelts; i++) {
-			ngx_pinba_socket_t **sock = socks->elts + socks->size * i;
+			ngx_pinba_socket_t **sock = (ngx_pinba_socket_t **)socks->elts + socks->size * i;
 			ngx_http_pinba_send_data(r, *sock, request, 0);
 		}
 
